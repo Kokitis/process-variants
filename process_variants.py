@@ -14,14 +14,26 @@ from pprint import pprint
 	3. Convert VCFs to MAF
 	4. Combine Patient MAFs
 """
-PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
+if sys.name == 'nt':
+	pass
+else:
+	PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
+	
+	# SOMATICSEQ_FOLDER/training and SOMATICSEQ/prediction will be created.
+	SOMATICSEQ_FOLDER = ""
+	OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
+
 def Terminal(command, show_output = True):
 	os.system(command)
 
 def checkdir(path):
 	if not os.path.isdir(path):
 		os.mkdir(path)
+def loadTSV(filename):
+	with open(filename, 'r') as file1:
+		reader = list(csv.DictReader(file1, delimiter = '\t'))
 
+	return reader
 
 def generateVennDiagram(filename = None, script_file = None, plot_file = None):
 	"""
@@ -141,21 +153,19 @@ def generateVennDiagram(filename = None, script_file = None, plot_file = None):
 
 class CombineVariants:
 	"""Combine separated indel and snv files """
-	def __init__(self, sample, options, output_folder):
-
-		sample_variants = GetVariantList(sample, options)
-
+	def __init__(self, sample, options, output_folder, variants = None):
+		if variants is None:
+			sample_variants = GetVariantList(sample, options)
+		else:
+			sample_variants = variants
 		modified_variants = self._modify_variants(sample_variants, options, output_folder)
 
-		snv_variants, indel_variants = self.splitVariants(modified_variants) #saved in same folder as parent
+		snv_variants, indel_variants = self.splitIndelSnvVariants(modified_variants) #saved in same folder as parent
 
 		output_basename = os.path.join(output_folder, "{0}_vs_{1}.merged".format(sample['NormalID'], sample['SampleID']))
 		self.snvs = self.combineVariants(snv_variants, options, output_basename + '.snp.vcf')
 		self.indels = self.combineVariants(indel_variants, options, output_basename + '.indel.vcf')
-		#self.filename = self.catVariants(merged_snvs, merged_indels)
-		#merged_vcf = self.combineVariants(modified_variants, options)
 
-		#self.filename = self._modify_merged_vcf(merged_vcf)
 	
 	def _modify_merged_vcf(self, filename):
 		basename = os.path.splitext(os.path.basename(filename))[0]
@@ -357,7 +367,7 @@ class CombineVariants:
 		os.system(command)
 
 		return output_file
-	def splitVariants(self, variants):
+	def splitIndelSnvVariants(self, variants):
 		""" Splits snvs and indels into separate files.
 		"""
 		snvs = dict()
@@ -896,6 +906,23 @@ class HarmonizeVCFsOBS:
 		return df
 
 class Truthset:
+	"""
+		Input
+		-----
+			Intersection
+
+
+		Output
+		------
+			The output is a vcf file of all sites that pass any truthset filters. the VAF for each
+			site is included.
+
+			Folder: PIPELINE_FOLDER/PROCESSED_VCFS_FOLDER/truthset/
+			Filename: [NORMAL]_vs_[TUMOR].[Training type].['snv'/'indel'].truthset.vcf (includes index file)
+		Description
+		-----------
+
+	"""
 	def __init__(self, samples, options, training_type, **kwargs):
 		""" Generates a truthset based on one or more samples.
 			Option 1: intersection of all 5 callers.
@@ -999,11 +1026,17 @@ class Truthset:
 		#self.filename = output_vcf
 		#Select truthset source
 		output_folder = options['Pipeline Options']['processed vcf folder']
-		output_folder = os.path.join(output_folder, 'merged_vcfs',sample['PatientID'])
+		output_folder = os.path.join(output_folder, 'merged_vcfs', sample['PatientID'])
 		checkdir(output_folder)
+		
+		if training_type == 'RNA':
+			variants = GetVariantList(sample, options, 'RNA-seq')
 
-		variants = GetVariantList(sample, options)
-		combined_variants = CombineVariants(sample, options, output_folder)
+		else:
+			variants = GetVariantList(sample, options, 'DNA-seq')
+		combined_variants = CombineVariants(sample, options, output_folder, variants = variants)
+		
+		#combined_variants = CombineVariants(sample, options, output_folder)
 		snv_variants = combined_variants.snvs
 		indel_variants = combined_variants.indels
 		
@@ -1344,12 +1377,12 @@ class Truthset:
 		pass
 	@staticmethod
 	def _from_RNA(record):
-
+		filterOut = False
 		row = {
 			'chrom': record.CHROM,
 			'position': record.POS,
 			'validation method': 'RNA-seq',
-			'validation status': 1
+			'validation status': int(filterOut == False)
 		}
 		return row
 
@@ -1392,29 +1425,44 @@ class Truthset:
 			writer.writerows(table)
 		return filename
 
-def GetVariantList(sample, options):
-	spf = options['Pipeline Options']['somatic pipeline folder']
-	print(type(spf))
-	print(spf)
-	vcf_folder = os.path.join(spf, sample['PatientID'])
+def GetVariantList(sample, options = None, folder = None, seq_type = 'DNA-seq'):
+	""" Returns a map of each caller's indel and snv outputs.
+		Parameters
+		----------
+			folder: string
+				The folder containing the somatic variants for all samples.
+			barcode: string
+				The TCGA barcode for the case
+	"""
+	#spf = options['Pipeline Options']['somatic pipeline folder']
+	if folder is None:
+		spf = SOMATIC_PIPELINE_FOLDER
+	else:
+		spf = folder
+	vcf_folder = os.path.join(spf, barcode)
+	if seq_type == 'DNA-seq':
 
-	patientID = sample['PatientID']
-	normalID  = sample['NormalID']
-	tumorID   = sample['SampleID']
 
-	variants   = {
-		#os.path.join(options['output']['Bambino'].format(patient = patientID),"{0}_vs_{1}.bambino.vcf".format(normalID, tumorID)),
-		#os.path.join(options['output']['Haplotypecaller'].format(patient = patientID), "{0}_vs_{1}.raw.snps.indels.vcf".join(normalID, tumorID)),
-		'muse':          os.path.join(vcf_folder, "MuSE", 				"{0}_vs_{1}.Muse.vcf".format(normalID, tumorID)),
-		'mutect':        os.path.join(vcf_folder, "MuTect2", 			"{0}_vs_{1}.mutect2.vcf".format(normalID, tumorID)),
-		'somaticsniper': os.path.join(vcf_folder, "SomaticSniper", 		"{0}_vs_{1}.somaticsniper.hq.vcf".format(normalID, tumorID)),
-		'strelka-indel': os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.indels.vcf.strelka.vcf".format(normalID, tumorID)),
-		'strelka-snv':   os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.snvs.vcf.strelka.vcf".format(normalID, tumorID)),
-		'varscan-indel': os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.indel.vcf".format(normalID, tumorID)),
-		'varscan-snv':   os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.snp.Somatic.hc.vcf".format(normalID, tumorID))
-	}
+		patientID = sample['PatientID']
+		normalID  = sample['NormalID']
+		tumorID   = sample['SampleID']
 
-	#variants = {k:v for k, v in variants.items() if os.path.isfile(v)}
+		variants   = {
+			#os.path.join(options['output']['Bambino'].format(patient = patientID),"{0}_vs_{1}.bambino.vcf".format(normalID, tumorID)),
+			#os.path.join(options['output']['Haplotypecaller'].format(patient = patientID), "{0}_vs_{1}.raw.snps.indels.vcf".join(normalID, tumorID)),
+			'muse':          os.path.join(vcf_folder, "MuSE", 				"{0}_vs_{1}.Muse.vcf".format(normalID, tumorID)),
+			'mutect':        os.path.join(vcf_folder, "MuTect2", 			"{0}_vs_{1}.mutect2.vcf".format(normalID, tumorID)),
+			'somaticsniper': os.path.join(vcf_folder, "SomaticSniper", 		"{0}_vs_{1}.somaticsniper.hq.vcf".format(normalID, tumorID)),
+			'strelka-indel': os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.indels.vcf.strelka.vcf".format(normalID, tumorID)),
+			'strelka-snv':   os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.snvs.vcf.strelka.vcf".format(normalID, tumorID)),
+			'varscan-indel': os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.indel.vcf".format(normalID, tumorID)),
+			'varscan-snv':   os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.snp.Somatic.hc.vcf".format(normalID, tumorID))
+		}
+	else:
+
+		variants = {
+			'haplotypecaller': os.path.join(vcf_folder, "HaplotypeCaller", "RNA-seq", "{0}.RNA.raw_snps_indels.vcf".format(sample['SampleID']))
+		}
 
 	return variants
 
@@ -1657,11 +1705,22 @@ def SomaticSeq(sample_list, options, training_type):
 
 
 def SomaticSeqTraining(sample_variants, options, truthset):
-	""" Runs SomaticSeq
+	""" Trains the somaticseq algorithm.
 		Parameters
 		----------
 			sample_variants: dict<>
 				A dictionary mapping callers to the output vcfs.
+		Inputs
+		------
+
+		Outputs
+		-------------
+			SOMATICSEQ_FOLDER/training
+				Ensemble.sINDEL.tsv
+				Ensemble.sINDEL.tsv.Classifier.RData
+				Ensemble.sSNV.tsv
+				Ensemble.sSNV.tsv.Classifier.RData
+
 	"""
 	variants = sample_variants
 	output_folder = os.path.join(
@@ -1677,10 +1736,10 @@ def SomaticSeqTraining(sample_variants, options, truthset):
 		'r_scripts',
 		"ada_model_builder.R")
 	
-	gatk_location = options['Programs']['GATK']
-	reference = options['Reference Files']['reference genome']
-	cosmic = options['Reference Files']['cosmic']
-	dbSNP = options['Reference Files']['dbSNP']
+	gatk_location=options['Programs']['GATK']
+	reference 	= options['Reference Files']['reference genome']
+	cosmic 		= options['Reference Files']['cosmic']
+	dbSNP 		= options['Reference Files']['dbSNP']
 
 	print("Script Information: ")
 	print("\t", ada_script)
@@ -1705,31 +1764,33 @@ def SomaticSeqTraining(sample_variants, options, truthset):
 		--truth-snv {truthset_snv} \
 		--truth-indel {truthset_indel} \
 		--output-dir {output_folder}""".format(
-			somaticseq = somaticseq_location,
-			gatk = gatk_location,
-			ada = ada_script,
+			somaticseq 		= somaticseq_location,
+			gatk 			= gatk_location,
+			ada 			= ada_script,
 
-			normal = sample['NormalBAM'],
-			tumor = sample['TumorBAM'],
-			targets = sample['ExomeTargets'],
-			reference = reference,
-			cosmic = cosmic,
-			dbSNP = dbSNP,
+			normal 			= sample['NormalBAM'],
+			tumor 			= sample['TumorBAM'],
+			targets 		= sample['ExomeTargets'],
+			reference 		= reference,
+			cosmic 			= cosmic,
+			dbSNP 			= dbSNP,
 
-			muse = variants['muse'],
-			mutect = variants['mutect'],
-			sniper = variants['somaticsniper'],
-			strelka_snv = variants['strelka-snv'],
-			strelka_indel = variants['strelka-indel'],
-			varscan_snv = variants['varscan-snv'],
-			varscan_indel = variants['varscan-indel'],
+			muse 			= variants['muse'],
+			mutect 			= variants['mutect'],
+			sniper 			= variants['somaticsniper'],
+			strelka_snv 	= variants['strelka-snv'],
+			strelka_indel 	= variants['strelka-indel'],
+			varscan_snv   	= variants['varscan-snv'],
+			varscan_indel 	= variants['varscan-indel'],
 			
-			truthset_snv = truthset.snv_filename,
-			truthset_indel = truthset.indel_filename,
-			output_folder = output_folder)
+			truthset_snv 	= truthset.snv_filename,
+			truthset_indel 	= truthset.indel_filename,
+			output_folder 	= output_folder)
 	Terminal(command)
 
 def SomaticSeqPredictor(sample_list, options):
+	""" 
+	"""
 	somaticseq_output_folder = "/home/upmc/Documents/Genomic_Analysis/somaticseq"
 	prediction_output_folder = os.path.join(somaticseq_output_folder, 'prediction')
 	training_output_folder = os.path.join(somaticseq_output_folder, 'training')
@@ -1800,25 +1861,67 @@ def SomaticSeqPredictor(sample_list, options):
 			output_folder = prediction_output_folder)
 	Terminal(command)
 
-def plotVAF():
-	pass
 
-options_filename = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
 options = configparser.ConfigParser()
-options.read(options_filename)
+options.read(OPTIONS_FILENAME)
+"""
+	Truthset -> Somaticseq training -> somaticseq prediction -> filter -> convert to MAF - > Combine MAFs
+"""
+
+class Pipeline:
+	""" Processes the output of all callers into a final callset.
+		Input
+		-----
+			sample files:
+				SOMATIC_PIPELINE_FOLDER/barcode/caller/
+
+		Output
+		------
+			Truthset: 
+			SomaticSeq: 
+		
+		Overview
+		--------
+			Truthset -> Somaticseq training -> somaticseq prediction -> filter -> convert to MAF - > Combine MAFs
+
+	"""
+	def __init__(self, training_samples, prediction_samples, options, training_type):
+		"""	Parameters
+			----------
+				training_samples: list<dict>
+					A list of samples from the sample list to train SomaticSeq with.
+				prediction_samples: list<dict>
+					A list of samples to use with the SomaticSeq predictor.
+				options: 
+				training_type: {'Intersection', 'RNA'}
+					The type of truthset to use.
+		"""
+		all_samples = training_samples + predition_samples
+		#raw_variants = GetVariantList(sample, options, 'DNA-seq')
+
+		truthset = Truthset(training_samples, options, training_type = training_type)
+
+		SomaticseqTraining(training_samples, options, truthset)
+		SomaticseqPredictor(prediction_samples, options)
+
+		#Filter
+
+		#Annotate and convert to MAF
+
+		#Combine MAFs
+
 
 if __name__ == "__main__" and True:
 	with open(os.path.join(PIPELINE_FOLDER, "DNA-seq_Sample_List.tsv"), 'r') as file1:
-		samples = list(csv.DictReader(file1, delimiter = '\t'))
+		full_sample_list = list(csv.DictReader(file1, delimiter = '\t'))
 
-	samples = [i for i in samples if i['PatientID'] in {'TCGA-JY-A938', 'TCGA-2H-A9GF'}]
-	#samples = [i for i in samples if i['PatientID'] in {'TCGA-2H-A9GF'}]
-	pprint(samples)
+	training_type = 'Intersection'
+	training_samples = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
 
-	#sample_variants = GetVariantList(sample, options)
-	truthset = Truthset(samples, options, training_type = 'Intersection')
-	#SomaticSeqPredictor(sample_variants, options)
-	#truthset = Truthset(sample, options, training_type = 'Intersection')
+	training_samples = [i for i in samples if i['PatientID'] in training_samples]
+	prediction_samples = [i for i in samples if i['PatientID'] not in training_samples]
+
+	Pipeline(training_samples, prediction_samples, options, training_type)
 
 elif True:
 	sample = {
