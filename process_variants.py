@@ -1,12 +1,23 @@
 import os
 import collections
 import sys
+
 import configparser
 
 import vcf
 import csv
 from pprint import pprint
+if os.name == 'nt':
+	pytools_folder = os.getenv('HOMEPATH', 'Documents', 'Github', 'pytools')
+else:
+	pass
+sys.path.append(pytools_folder)
 
+try:
+	from systemtools import *
+	from filetools import *
+except:
+	from file_tools import *
 """
 	1. Harmonize VCF fields
 	2. Merge caller VCFs
@@ -14,46 +25,13 @@ from pprint import pprint
 	4. Combine Patient MAFs
 """
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
-SYSTEM_LOG_FILE = os.path.join(PIPELINE_FOLDER, "system_log_file.txt")
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
 
-def Terminal(command, useSystem = True, toFile = False):
-	if useSystem:
-		os.system(command)
-		output = "os.system({0})".format("command")
-	else:
-		result = subprocess.Popen(command, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
-		output = str(result.stdout.read(),'utf-8')
 
-	if toFile:
-		with open(SYSTEM_LOG_FILE, 'a') as log_file:
-			log_file.write(output)
 
-	return output
-
-def checkdir(path, full = False):
-	if not os.path.isdir(path):
-		if full:	os.makedirs(path)
-		else:		os.mkdir(path)
-
-def readTSV(filename, headers = False):
-	with open(filename, 'r') as file1:
-		reader = csv.DictReader(file1, delimiter = '\t')
-		fieldnames = reader.fieldnames
-		reader = list(reader)
-
-	if headers: return reader, fieldnames
-	else:       return reader
-
-def writeTSV(table, filename, fieldnames = None):
-	if fieldnames is None:
-		fieldnames = sorted(table[0].keys())
-	with open(filename, 'w', newline = '') as file1:
-		writer = csv.DictWriter(file1, delimiter = '\t', fieldnames = fieldnames)
-		writer.writeheader()
-		writer.writerows(table)
-	return filename
-
+class Workflow:
+	def __init__(self, **kwargs):
+		pass
 
 class CombineCallsets:
 	"""Combine separated indel and snv files
@@ -620,11 +598,11 @@ class VCFtoMAF:
 				VAF: The variant allele frequency
 
 		"""
-		self.reference_build = 'GRCh38'
-		self.vcftomaf_program = options['Programs']['vcf2maf']
-		self.vep_program = options['Programs']['varianteffectpredictor']
-		self.reference = options['Reference Files']['reference genome']
-		self.maf_fieldnames = [ 
+		self.reference_build 	= 'GRCh38'
+		self.vcftomaf_program 	= options['Programs']['vcf2maf']
+		self.vep_program 		= options['Programs']['varianteffectpredictor']
+		self.reference 			= options['Reference Files']['reference genome']
+		self.maf_fieldnames 	= [ 
 			"Hugo_Symbol", "Entrez_Gene_Id", "Center", "NCBI_Build", "Chromosome", "Start_Position", 
 			"End_Position", "Strand", "Variant_Classification", "Variant_Type", "Reference_Allele",
 			"Tumor_Seq_Allele1", "Tumor_Seq_Allele2", "dbSNP_RS", "dbSNP_Val_Status", "Tumor_Sample_Barcode", 
@@ -649,11 +627,11 @@ class VCFtoMAF:
 
 		self.output_folder = options['Pipeline Options']['maf folder']
 		raw_maf = os.path.join(output_folder, "{0}.raw.maf".format(sample['PatientID']))
-		self.final_maf = os.path.join(output_folder, "{0}.maf".format(sample['PatientID']))
+		self.maf = os.path.join(output_folder, "{0}.maf".format(sample['PatientID']))
 		maf_file = self.vcftomaf(sample, input_vcf, raw_maf)
 		#maf_file = self.modifyMAF(sample, options, maf_file, truthset)
 
-		print("Saving to ", self.final_maf)
+		print("Output MAF: ", self.final_maf)
 
 
 		#file1.write("#version 2.4\n")
@@ -719,7 +697,7 @@ class VCFtoMAF:
 		return output_maf
 
 	@staticmethod
-	def vcftomaf(sample, options, input_vcf, output_maf):
+	def vcftomaf(sample, input_vcf, output_maf):
 		"""
 		 --input-vcf      Path to input file in VCF format
 		 --output-maf     Path to output MAF file [Default: STDOUT]
@@ -771,9 +749,10 @@ class VCFtoMAF:
 				vcf 		= input_vcf,
 				maf 		= output_maf)
 		#print(command)
-		Terminal(command)
+		if not os.path.isfile(output_maf):
+			Terminal(command)
 
-		return output_file
+		return output_maf
 
 	def filterMAF(sample, options, input_maf, caller):
 		"""
@@ -830,7 +809,8 @@ class SomaticSeq:
 		self.somaticseq_output_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq')
 		self.training_folder   = os.path.join(self.somaticseq_output_folder, 'training-'   + self.training_type)
 		self.prediction_folder = os.path.join(self.somaticseq_output_folder, 'prediction-' + self.training_type)
-
+		checkdir(self.training_folder)
+		checkdir(self.prediction_folder)
 		#Generate the truthset.
 		if isinstance(truthset, str):
 			self.training_type = truthset
@@ -849,7 +829,10 @@ class SomaticSeq:
 			trainer = self._runTrainer(training_sample, sample_variants)
 			self.trainers.append(trainer)
 
-		self.trainer = self._combineTrainers(self.trainers)
+		self.ensemble_tables = self._combineTrainers(self.trainers)
+		self.trainer = self._runManualClassifier(
+			self.ensemble_tables['indelTable'], 
+			self.ensemble_tables['snvTable'])
 
 		#Run the prediction model on the prediction variants.
 		self.predictions = list()
@@ -875,6 +858,7 @@ class SomaticSeq:
 		"""
 		output_folder = os.path.join(self.training_folder, 'tables', sample['PatientID'])
 		checkdir(output_folder, True)
+		#			--ada-r-script {ada} \
 		command = """{somaticseq} \
 			--mutect2 {mutect} \
 			--varscan-snv {varscan_snv} \
@@ -885,7 +869,6 @@ class SomaticSeq:
 			--strelka-indel {strelka_indel} \
 			--normal-bam {normal} \
 			--tumor-bam {tumor} \
-			--ada-r-script {ada} \
 			--genome-reference {reference} \
 			--cosmic {cosmic} \
 			--dbsnp {dbSNP} \
@@ -945,7 +928,7 @@ class SomaticSeq:
 
 		return output_file
 
-	def _combineTrainers(self, tables):
+	def _combineTables(self, tables):
 		""" Combines the output Ensemble tables form somaticseq.
 		"""
 		output_folder = os.path.join(self.training_folder, "combined_tables")
@@ -973,7 +956,7 @@ class SomaticSeq:
 		}
 		return output
 
-	def _runClassifier(self, indel_table, snv_table):
+	def _runManualClassifier(self, indel_table, snv_table):
 		""" Trains the model using the provided tables.
 		"""
 		output_folder = os.path.dirname(snv_table)
@@ -1047,8 +1030,8 @@ class SomaticSeq:
 				snv_classifier   = trainer['snvClassifier'],
 				indel_classifier = trainer['indelClassifier'],
 				output_folder = self.prediction_folder)
-		indel_table = os.path.join(output_folder)
-		snv_table = os.path.join(output_folder)
+		indel_table = os.path.join(output_folder, "Ensemble.sINDEL.tsv")
+		snv_table = os.path.join(output_folder, "Ensemble.sSNV.tsv")
 		if not os.path.exists(indelTable) or not os.path.exists(snvTable):
 			Terminal(command)
 
@@ -1069,7 +1052,7 @@ class SomaticSeq:
 
 class FilterVCF:
 	"""
-		Filters varaints based on a set of common filters.
+		Filters variants based on a set of common filters.
 		Generates two files, one containing the variants that passed all filters and one with variants
 		that were rejected.
 
@@ -1177,6 +1160,27 @@ class Pipeline:
 		Overview
 		--------
 			Truthset -> Somaticseq training -> somaticseq prediction -> filter -> convert to MAF - > Combine MAFs
+			Folder Setup:
+				1_input_files
+					Case1
+						Callset1.vcf
+						Callset2.vcf
+						...
+					Case2
+					Case3
+					...
+				2_processed_vcfs
+					truthset
+						truthset1
+						truthset2
+						...
+				somaticseq
+					training
+						..files
+					prediction
+						..files
+
+
 
 	"""
 	def __init__(self, training_samples, prediction_samples, options, training_type):
