@@ -154,6 +154,13 @@ class SearchOutputFiles:
 
 		return filename
 
+	@staticmethod
+	def _compile(regex):
+		sample_regex = "[-a-z0-9]+"
+		prefix_regex = "{0}_vs_{0}".format(sample_regex)
+		regex = {k: re.compile(v.format(sample = sample_regex, prefix = prefix_regex)) for k, v in regex.items()}
+		return regex
+
 	def _defineFilenameTemplates(self):
 
 
@@ -267,8 +274,156 @@ class SearchOutputFiles:
 					matches.append(abs_path)
 		return matches
 
+class getFiles:
+	def __init__(self, folder, barcode):
+		self.patient_folder = os.path.join(folder, barcode)
+		
+		self.regexes = self._defineCallerTemplates()
+
+		self.file_list = self.listAllFilesInFolder(self.patient_folder)
+
+		self.callset = self.sortFiles()
+	@staticmethod
+	def _compile(regex):
+		regex = {k: re.compile(v) for k, v in regex.items()}
+		return regex
+	@staticmethod
+	def _defineCnvKit():
+		cnvkit = {
+			'CNV0': "{sample}.cnr",
+			'CNV1': "{sample}.cns",
+			'CNV2': "{sample}.targetcoverage",
+			'CNV3': "{sample}.antitargetcoverage"
+		}
+		return cnvkit
+	@staticmethod
+	def _defineDepthofCoverage():
+		depthofcoverage = {
+			'DOC0': "{prefix}.depthofcoverage"
+		}
+		return depthofcoverage
+	@staticmethod
+	def _defineFreec():
+		freec = {
+			'FRE0': "{prefix}.freec"
+		}
+		return freec
+	@staticmethod
+	def _defineHaplotypecaller():
+		haplotypecaller = {
+			'HAP0': "{prefix}.haplotypecaller"
+		}
+		return haplotypecaller
+	@staticmethod
+	def _defineMuse():
+		muse = {
+			'MUS0': "{prefix}.muse.vcf"
+		}
+		return muse
+	@staticmethod
+	def _defineMutect2():
+		mutect2 = {
+			'MUT0': "{prefix}.mutect2"
+		}
+		return mutect2
+	@staticmethod
+	def _defineSomaticsniper():
+		somaticsniper = {
+			'SOM0': "{prefix}.somaticsniper.lq",
+			'SOM1': "{prefix}.somaticsniper.hq",
+			'SOM2': "{prefix}.somaticsniper.vcf"
+		}
+		return somaticsniper
+	@staticmethod
+	def _defineStrelka():
+		strelka = {
+			'STR0': "all.somatic.indels",
+			'STR1': "all.somatic.snvs",
+			'STR2': "passed.somatic.indels",
+			'STR3': "passed.somatic.snvs"
+		}
+		return strelka
+	@staticmethod
+	def _defineUnifiedgenotyper():
+		unifiedgenotyper = {
+			'UNI0': "{prefix}.unifiedgenotyper"
+		}
+		return unifiedgenotyper
+	@staticmethod
+	def _defineVarscan():
+		varscan = {
+			'VAR0': "{prefix}.varscan"
+		}
+		return varscan
+	@staticmethod
+	def _defineVarscanCopynumber():
+		return {}
+	def _defineCallerTemplates(self):
+
+		cnvkit 			= self._compile(self._defineCnvKit())
+		depthofcoverage = self._compile(self._defineDepthofCoverage())
+		freec 			= self._compile(self._defineFreec())
+		haplotypecaller = self._compile(self._defineHaplotypecaller())
+		muse 			= self._compile(self._defineMuse())
+		mutect2 		= self._compile(self._defineMutect2())
+		somaticsniper 	= self._compile(self._defineSomaticsniper())
+		strelka 		= self._compile(self._defineStrelka())
+		unifiedgenotyper= self._compile(self._defineUnifiedgenotyper())
+		varscan 		= self._compile(self._defineVarscan())
+		varscan_copynumber=self._compile(self._defineVarscanCopynumber())
+
+		callers = {
+			'cnvkit': cnvkit,
+			'depthofcoverage': depthofcoverage,
+			'freec': freec,
+			'haplotypecaller': haplotypecaller,
+			'muse': muse,
+			'mutect2': mutect2,
+			'somaticsniper': somaticsniper,
+			'strelka': strelka,
+			'unifiedgenotyper': unifiedgenotyper,
+			'varscan': varscan
+		}
+		return callers
+	def classifyFiles(self, filename):
+		""" Determines which caller a specific file originated from."""
+
+		for caller, caller_regex in self.regexes.items():
+			for key, regex in caller_regex.items():
+				match = regex.search(filename)
+				if match is not None:
+					result = caller
+					break
+		else:
+			caller = None
+		return caller
+
+	def listAllFilesInFolder(self, folder):
+		""" gets a list of all files in a specific folder including subfolders."""
+		found = list()
+		for fn in os.listdir(folder):
+			abs_path = os.path.join(folder, fn)
+			if os.path.isdir(abs_path):
+				found += self.listAllFilesInFolder(abs_path)
+			elif os.path.isfile(abs_path):
+				found.append(abs_path)
+		return found
+
+	def sortFiles(self):
+		""" Sorts files by caller."""
+		filenames = self.file_list
+		files = list()
+		for fn in filenames:
+			caller = self.classifyFiles(fn)
+			if caller:
+				files.append((filename, caller))
+		return files
+
 
 if __name__ == "__main__":
-	filename = "C:\\Users\\Deitrickc\\Documents\\UPMC Files\\Projects\\Genome Instability Project\\Data\\Genomic_Analysis\\1_input_vcfs\\"
-	destination = "C:\\Users\\Deitrickc\\Documents\\UPMC Files\\Projects\\Genome Instability Project\\Data\\Genomic_Analysis\\1_input_vcfs\\test\\"
-	SearchOutputFiles(filename, destination)
+	#filename = "C:\\Users\\Deitrickc\\Documents\\UPMC Files\\Projects\\Genome Instability Project\\Data\\Genomic_Analysis\\1_input_vcfs\\"
+	#destination = "C:\\Users\\Deitrickc\\Documents\\UPMC Files\\Projects\\Genome Instability Project\\Data\\Genomic_Analysis\\1_input_vcfs\\test\\"
+	folder = "F:\\Data\\TCGA-ESCA\\raw_snp_output\\"
+	barcode = 'TCGA-2H-A9GF'
+	getter = getFiles(folder, barcode)
+	pprint(getter.callset)
