@@ -7,17 +7,9 @@ import configparser
 import vcf
 import csv
 from pprint import pprint
-if os.name == 'nt':
-	pytools_folder = os.getenv('HOMEPATH', 'Documents', 'Github', 'pytools')
-else:
-	pass
-sys.path.append(pytools_folder)
 
-try:
-	from systemtools import *
-	from filetools import *
-except:
-	from file_tools import *
+import vcftools
+
 """
 	1. Harmonize VCF fields
 	2. Merge caller VCFs
@@ -941,14 +933,14 @@ class SomaticSeq:
 		indel_table = list()
 		snv_table = list()
 		for filename in [i['indelTable'] for i in tables]:
-			table, indel_fieldnames = readTSV(filename, True)
+			table, indel_fieldnames = vcftools.readCSV(filename, True)
 			indel_table += table
 		for filename in [i['snvTable'] for i in tables]:
-			table, snv_fieldnames = readTSV(filename, True)
+			table, snv_fieldnames = vcftools.readCSV(filename, True)
 			snv_tables += table
 
-		writeTSV(indel_table, indel_table_filename, fieldnames = indel_fieldnames)
-		writeTSV(snv_table, snv_table_filename, fieldnames = snv_fieldnames)
+		vcftools.writeCSV(indel_table, indel_table_filename, fieldnames = indel_fieldnames)
+		vcftools.writeCSV(snv_table, snv_table_filename, fieldnames = snv_fieldnames)
 
 		output = {
 			'snvTable': snv_table_filename,
@@ -1278,13 +1270,13 @@ if __name__ == "__main__" and True:
 	options.read(OPTIONS_FILENAME)
 	
 	full_sample_list_filename = os.path.join(PIPELINE_FOLDER, "DNA-seq_Sample_List.tsv")
-	full_sample_list = readTSV(full_sample_list_filename)
+	full_sample_list = vcftools.readCSV(full_sample_list_filename)
 
 	training_type = 'Intersection'
 	training_samples = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
 
-	training_samples 	= [i for i in samples if i['PatientID'] in training_samples]
-	prediction_samples 	= [i for i in samples if i['PatientID'] not in training_samples]
+	training_samples 	= [i for i in full_sample_list if i['PatientID'] in training_samples]
+	prediction_samples 	= [i for i in full_sample_list if i['PatientID'] not in training_samples]
 
 	Pipeline(training_samples, prediction_samples, options, training_type)
 
