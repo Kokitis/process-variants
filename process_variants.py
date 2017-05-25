@@ -8,8 +8,6 @@ import vcf
 import csv
 from pprint import pprint
 
-import vcftools
-
 """
 	1. Harmonize VCF fields
 	2. Merge caller VCFs
@@ -20,10 +18,11 @@ GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
 sys.path.append(GITHUB_FOLDER)
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
+
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
-
+import varianttools.callertools
 
 class Workflow:
 	def __init__(self, **kwargs):
@@ -256,20 +255,27 @@ class Truthset:
 					A list of samples to base the truthset on. Note: the sample variants will be found separately.
 				options: dict<>
 				training_type: {'Intersection', 'RNA-seq'}
+				verbose: bool, default False
+					Whether to print status messages.
 		"""
+		verbose = kwargs.get('verbose', False)
+		kwargs['intersection'] = kwargs.get('intersection', 5)
 		self.min_tumor_vaf = 0.08
 		self.max_normal_vaf = 0.03
-		pprint(list(options.keys()))
+
 		self.truthset_folder = os.path.join(options['Pipeline Options']['processed vcf folder'], "truthset")
-		self.gatk_program = options['Programs']['GATK']
+		self.gatk_program 	= options['Programs']['GATK']
 		self.picard_program = options['Programs']['Picard']
-		self.reference = options['Reference Files']['reference genome']
+		self.reference 		= options['Reference Files']['reference genome']
 
 
-		kwargs['intersection'] = kwargs.get('intersection', 5)
+		
 		self.training_type = training_type
 		outputs = list()
+
 		for sample in samples:
+			if verbose:
+				print(sample)
 			if training_type == 'Intersection': sample_variants = GetVariantList(sample)
 			elif training_type == 'RNA-seq': sample_variants = GetVariantList(sample, "RNA-seq")
 			sample_truthset = self._per_sample(sample, options, training_type, **kwargs)
@@ -284,7 +290,9 @@ class Truthset:
 		self.indel_filename = sample_truthset['filename-indel']
 		self.snv_filename   = sample_truthset['filename-snv']
 
-
+	def __str__(self):
+		string = "Truthset(type = {}, filename = {})".format(self.training_type, self.filename)
+		return string
 	def _per_sample(self, variants, options, training_type, **kwargs):
 		""" Generates individual truthsets per sample.
 			Available Keyword Arguments
@@ -297,11 +305,12 @@ class Truthset:
 		tumorID = sample['SampleID']
 
 		vcf_filenames = self._get_vcf_files(sample, options, training_type)
+
 		output_vcf = os.path.join(                self.truthset_folder, "{0}_vs_{1}.{2}.truthset.vcf".format(normalID, tumorID, training_type))
 		snv_filename = snv_vcf = os.path.join(self.truthset_folder, "{0}_vs_{1}.{2}.snv.truthset.vcf".format(normalID, tumorID, training_type))
 		indel_filename = os.path.join(      self.truthset_folder, "{0}_vs_{1}.{2}.indel.truthset.vcf".format(NormalID, tumorID, training_type))
 		output_folder = os.path.join(self.truthset_folder, 'merged_vcfs', sample['PatientID'])
-		checkdir(output_folder, True)
+		systemtools.checkDir(output_folder, True)
 		
 		combined_variants = CombineCallset(sample, options, output_folder, variants = variants)
 		
@@ -773,8 +782,8 @@ class SomaticSeq:
 
 			Parameters
 			----------
-				training_samples:
-				prediction_samples:
+				training_samples: list<dict>
+				prediction_samples: list<dict>
 				options:
 				truthset: string, Truthset
 					Either a training type to generate a truthset with or a pre-configured truthset.
@@ -806,11 +815,14 @@ class SomaticSeq:
 
 		#Generate the truthset.
 		if isinstance(truthset, str):
+			#The truthset training type was supplied instead of the truthset itself.
 			self.training_type = truthset
 			self.truthset = Truthset(training_samples, options, training_type)
 		else:
+			#A truthset object was passed
 			self.training_type = truthset.training_type
 			self.truthset = truthset
+		print(Truthset)
 
 		self.training_folder   = os.path.join(self.somaticseq_output_folder, 'training-'   + self.training_type)
 		self.prediction_folder = os.path.join(self.somaticseq_output_folder, 'prediction-' + self.training_type)
@@ -818,7 +830,7 @@ class SomaticSeq:
 		filetools.checkDir(self.prediction_folder)
 
 
-		#Generate individual tables for each training sample.
+		#Generate separate tables for each training sample.
 		if   self.training_type == 'Intersection': file_type = 'DNA-seq'
 		elif self.training_type == 'RNA-seq':      file_type = 'RNA-seq'
 
@@ -1184,7 +1196,7 @@ class Pipeline:
 
 
 	"""
-	def __init__(self, training_samples, prediction_samples, options, training_type):
+	def __init__(self, training_samples, prediction_samples, options, training_type, **kwargs):
 		"""	Parameters
 			----------
 				training_samples: list<dict>
@@ -1196,11 +1208,22 @@ class Pipeline:
 					The type of truthset to use.
 						'Intersection': Will use the intersection of the callsets
 						'RNA': Will use variants called via RNA-seq as the truthset.
+			Keyword Arguments
+			-----------------
+				verbose: bool; default True
+					If true, prints status messages.
 		"""
+		verbose = kwargs.get('verbose', True)
+
+		if verbose:
+			print("training samples: ", ', '.join(i['PatientID'] for i in training_samples))
+			print("prediction samples: ", ', '.join(i['PatientID'] for i in prediction_samples))
+
 		all_samples = training_samples + prediction_samples
+		
 		#raw_variants = GetVariantList(sample, options, 'DNA-seq')
 
-		truthset = Truthset(training_samples, options, training_type = training_type)
+		truthset = Truthset(training_samples, options, training_type = training_type, **kwargs)
 
 		somaticseq = SomaticSeq(training_samples, prediction_samples, options, truthset = truthset)
 		predictions = somaticseq.predictions #list of dictionaries with the output filenames for a given sample.
@@ -1230,45 +1253,6 @@ class Pipeline:
 		
 		#Combine MAFs
 
-def GetVariantList(sample, seq_type = 'DNA-seq', folder = None):
-	""" Returns a map of each caller's indel and snv outputs.
-		Parameters
-		----------
-			folder: string
-				The folder containing the somatic variants for all samples.
-			barcode: string
-				The TCGA barcode for the case
-	"""
-	#spf = options['Pipeline Options']['somatic pipeline folder']
-	patientID = sample['PatientID']
-	normalID  = sample['NormalID']
-	tumorID   = sample['SampleID']
-	
-	if folder is None:
-		folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs")
-	vcf_folder = os.path.join(folder, sample['PatientID'])
-	
-	if seq_type == 'DNA-seq':
-		variants   = {
-			'muse':          os.path.join(vcf_folder, "MuSE", 				"{0}_vs_{1}.Muse.vcf".format(				normalID, tumorID)),
-			'mutect':        os.path.join(vcf_folder, "MuTect2", 			"{0}_vs_{1}.mutect2.vcf".format(			normalID, tumorID)),
-			'somaticsniper': os.path.join(vcf_folder, "SomaticSniper", 		"{0}_vs_{1}.somaticsniper.hq.vcf".format(	normalID, tumorID)),
-			'varscan-indel': os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.indel.vcf".format(			normalID, tumorID)),
-			'varscan-snv':   os.path.join(vcf_folder, "Varscan", 			"{0}_vs_{1}.raw.snp.Somatic.hc.vcf".format(	normalID, tumorID))
-		}
-		if os.path.exists(os.path.join(vcf_folder, "Strelka", "results")):
-			variants['strelka-indel'] = os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.indels.vcf.strelka.vcf".format(normalID, tumorID))
-			variants['strelka-snv']   = os.path.join(vcf_folder, "Strelka", "results", "{0}_vs_{1}.passed.somatic.snvs.vcf.strelka.vcf".format(	normalID, tumorID))
-		else:
-			variants['strelka-indel'] = os.path.join(vcf_folder, "Strelka", "{0}_vs_{1}.passed.somatic.indels.vcf.strelka.vcf".format(normalID, tumorID))
-			variants['strelka-snv']   = os.path.join(vcf_folder, "Strelka", "{0}_vs_{1}.passed.somatic.snvs.vcf.strelka.vcf".format(normalID, tumorID))
-	else:
-
-		variants = {
-			'haplotypecaller': os.path.join(vcf_folder, "HaplotypeCaller", "RNA-seq", "{0}.RNA.raw_snps_indels.vcf".format(sample['SampleID']))
-		}
-
-	return variants
 
 
 
@@ -1279,7 +1263,7 @@ def GetVariantList(sample, seq_type = 'DNA-seq', folder = None):
 if __name__ == "__main__" and True:
 	options = configparser.ConfigParser()
 	options.read(OPTIONS_FILENAME)
-	
+
 	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
 	full_sample_list_filename = os.path.join(documents_folder, "DNA-seq_Sample_List.tsv")
