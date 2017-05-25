@@ -16,9 +16,13 @@ import vcftools
 	3. Convert VCFs to MAF
 	4. Combine Patient MAFs
 """
+GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
+sys.path.append(GITHUB_FOLDER)
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
-
+import pytools.systemtools as systemtools
+import pytools.filetools as filetools
+import pytools.tabletools as tabletools
 
 
 class Workflow:
@@ -177,7 +181,7 @@ class CombineCallsets:
 				rod = 		order,
 				output = 	output_file)
 		if not os.path.exists(output_file):
-			Terminal(command)
+			systemtools.Terminal(command)
 		return output_file
 	def catVariants(self, left, right):
 		""" Combines the SNV and Indel files. Assumes both are saved in the same folder. """
@@ -195,7 +199,7 @@ class CombineCallsets:
 			left = left,
 			right = right,
 			output = output_file)
-		Terminal(command)
+		systemtools.Terminal(command)
 
 		return output_file
 	def splitIndelSnvVariants(self, variants):
@@ -255,8 +259,8 @@ class Truthset:
 		"""
 		self.min_tumor_vaf = 0.08
 		self.max_normal_vaf = 0.03
-
-		self.truthset_folder = os.path.join(options['Pipeline Options']['processed vcfs folder'], "truthset")
+		pprint(list(options.keys()))
+		self.truthset_folder = os.path.join(options['Pipeline Options']['processed vcf folder'], "truthset")
 		self.gatk_program = options['Programs']['GATK']
 		self.picard_program = options['Programs']['Picard']
 		self.reference = options['Reference Files']['reference genome']
@@ -483,15 +487,15 @@ class Truthset:
 			output 		= snv_filename)
 
 		indel_command = picard_base_command.format(
-			program = program,
-			reference = reference,
-			variants = indel_variants,
-			output = indel_filename)
+			program 	= self.picard_program,
+			reference 	= self.reference,
+			variants 	= indel_variants,
+			output 		= indel_filename)
 
 		if not os.path.exists(snv_filename):
-			Terminal(snv_command)
+			systemtools.Terminal(snv_command)
 		if not os.path.exists(indel_filename):
-			Terminal(indel_command)
+			systemtools.Terminal(indel_command)
 		result = {
 			'PatientID': sampleIds,
 			'filename': filename,
@@ -742,7 +746,7 @@ class VCFtoMAF:
 				maf 		= output_maf)
 		#print(command)
 		if not os.path.isfile(output_maf):
-			Terminal(command)
+			systemtools.Terminal(command)
 
 		return output_maf
 
@@ -799,10 +803,7 @@ class SomaticSeq:
 		self.reference 	= options['Reference Files']['reference genome']
 
 		self.somaticseq_output_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq')
-		self.training_folder   = os.path.join(self.somaticseq_output_folder, 'training-'   + self.training_type)
-		self.prediction_folder = os.path.join(self.somaticseq_output_folder, 'prediction-' + self.training_type)
-		checkdir(self.training_folder)
-		checkdir(self.prediction_folder)
+
 		#Generate the truthset.
 		if isinstance(truthset, str):
 			self.training_type = truthset
@@ -810,6 +811,12 @@ class SomaticSeq:
 		else:
 			self.training_type = truthset.training_type
 			self.truthset = truthset
+
+		self.training_folder   = os.path.join(self.somaticseq_output_folder, 'training-'   + self.training_type)
+		self.prediction_folder = os.path.join(self.somaticseq_output_folder, 'prediction-' + self.training_type)
+		filetools.checkDir(self.training_folder)
+		filetools.checkDir(self.prediction_folder)
+
 
 		#Generate individual tables for each training sample.
 		if   self.training_type == 'Intersection': file_type = 'DNA-seq'
@@ -821,7 +828,8 @@ class SomaticSeq:
 			trainer = self._runTrainer(training_sample, sample_variants)
 			self.trainers.append(trainer)
 
-		self.ensemble_tables = self._combineTrainers(self.trainers)
+		#self.ensemble_tables = self._combineTrainers(self.trainers)
+		self.ensemble_tables = self._combineTables(self.trainers)
 		self.trainer = self._runManualClassifier(
 			self.ensemble_tables['indelTable'], 
 			self.ensemble_tables['snvTable'])
@@ -849,7 +857,7 @@ class SomaticSeq:
 				[somaticseq output folder]/training-[training type]/[barcode]/[files]
 		"""
 		output_folder = os.path.join(self.training_folder, 'tables', sample['PatientID'])
-		checkdir(output_folder, True)
+		filetools.checkDir(output_folder, True)
 		#			--ada-r-script {ada} \
 		command = """{somaticseq} \
 			--mutect2 {mutect} \
@@ -899,7 +907,7 @@ class SomaticSeq:
 			'snvClassifier': os.path.join(ouput_folder, "Ensemble.sSNV.tsv.Classifier.RData")
 		}
 		if any([not os.path.exists(fn) for fn in expected_output.values()]):
-			Terminal(command)
+			systemtools.Terminal(command)
 		expected_output['PatientID'] = sample['PatientID']
 		return expected_output
 
@@ -916,7 +924,7 @@ class SomaticSeq:
 			tools = "")
 
 		if not os.path.exists(output_file):
-			Terminal(command)
+			systemtools.Terminal(command)
 
 		return output_file
 
@@ -924,7 +932,7 @@ class SomaticSeq:
 		""" Combines the output Ensemble tables form somaticseq.
 		"""
 		output_folder = os.path.join(self.training_folder, "combined_tables")
-		checkdir(output_folder)
+		filetools.checkDir(output_folder)
 		training_ids = sorted(i['PatientID'] for i in tables)
 		training_ids_string = ','.join([i.split('-')[2] for i in training_ids])
 		indel_table_filename = os.path.join(output_folder, "Ensemble.sINDEL.combined.{0}.tsv".format(training_ids_string))
@@ -932,15 +940,16 @@ class SomaticSeq:
 
 		indel_table = list()
 		snv_table = list()
+		pprint(tables)
 		for filename in [i['indelTable'] for i in tables]:
-			table, indel_fieldnames = vcftools.readCSV(filename, True)
+			table, indel_fieldnames = tabletools.readCSV(filename, True)
 			indel_table += table
 		for filename in [i['snvTable'] for i in tables]:
-			table, snv_fieldnames = vcftools.readCSV(filename, True)
+			table, snv_fieldnames = tabletools.readCSV(filename, True)
 			snv_tables += table
 
-		vcftools.writeCSV(indel_table, indel_table_filename, fieldnames = indel_fieldnames)
-		vcftools.writeCSV(snv_table, snv_table_filename, fieldnames = snv_fieldnames)
+		tabletools.writeCSV(indel_table, indel_table_filename, fieldnames = indel_fieldnames)
+		tabletools.writeCSV(snv_table, snv_table_filename, fieldnames = snv_fieldnames)
 
 		output = {
 			'snvTable': snv_table_filename,
@@ -1025,7 +1034,7 @@ class SomaticSeq:
 		indel_table = os.path.join(output_folder, "Ensemble.sINDEL.tsv")
 		snv_table = os.path.join(output_folder, "Ensemble.sSNV.tsv")
 		if not os.path.exists(indelTable) or not os.path.exists(snvTable):
-			Terminal(command)
+			systemtools.Terminal(command)
 
 		indel_vcf =	self.TsvToVcf(indelTable)
 		snv_vcf = self.TsvToVcf(snvTable)
@@ -1182,11 +1191,13 @@ class Pipeline:
 					A list of samples from the sample list to train SomaticSeq with.
 				prediction_samples: list<dict>
 					A list of samples to use with the SomaticSeq predictor.
-				options: 
+				options: config
 				training_type: {'Intersection', 'RNA'}
 					The type of truthset to use.
+						'Intersection': Will use the intersection of the callsets
+						'RNA': Will use variants called via RNA-seq as the truthset.
 		"""
-		all_samples = training_samples + predition_samples
+		all_samples = training_samples + prediction_samples
 		#raw_variants = GetVariantList(sample, options, 'DNA-seq')
 
 		truthset = Truthset(training_samples, options, training_type = training_type)
@@ -1269,11 +1280,14 @@ if __name__ == "__main__" and True:
 	options = configparser.ConfigParser()
 	options.read(OPTIONS_FILENAME)
 	
-	full_sample_list_filename = os.path.join(PIPELINE_FOLDER, "DNA-seq_Sample_List.tsv")
-	full_sample_list = vcftools.readCSV(full_sample_list_filename)
+	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
+
+	full_sample_list_filename = os.path.join(documents_folder, "DNA-seq_Sample_List.tsv")
+	full_sample_list = tabletools.readCSV(full_sample_list_filename)
 
 	training_type = 'Intersection'
 	training_samples = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
+
 
 	training_samples 	= [i for i in full_sample_list if i['PatientID'] in training_samples]
 	prediction_samples 	= [i for i in full_sample_list if i['PatientID'] not in training_samples]
