@@ -7,6 +7,7 @@ import configparser
 import vcf
 import csv
 from pprint import pprint
+import shutil
 
 """
 	1. Harmonize VCF fields
@@ -14,25 +15,123 @@ from pprint import pprint
 	3. Convert VCFs to MAF
 	4. Combine Patient MAFs
 """
-GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
+if os.name == 'nt':
+	GITHUB_FOLDER = os.path.join(os.getenv('USERPROFILE'), 'Documents', 'Github')
+else:
+	GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
 sys.path.append(GITHUB_FOLDER)
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
 
+
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
-import varianttools.callertools
+import varianttools.callertools as callertools
+import varianttools.vcftools as vcftools
+GetVariantList = callertools.CallerOutputClassifier(reduce = True, verbose = True)
+def getPatientFolder(patientid):
+	patient_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs" , "original_callsets", patientid)
+	return patient_folder
+
+class Callset:
+	""" Collects and manages the callset belonging to a single patient. """
+
+	def __init__(self, sample, callset = None):
+		self.sample = sample
+		if callset is None:
+			patient_folder = getPatientFolder(sample['PatientID'])
+			self.original_callset = GetVariantList(patient_folder)
+		else:
+			self.original_callset = callset
+
+		self.callset_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
+
+		filetools.checkDir(self.callset_folder, True)
+
+		#Split muse, mutect2, and somaticsniper into indel-snp callsets.
+		self.split_callset = self._generateFullCallset(self.original_callset)
+
+		callset_status = self._verifyCallset()
+		if callset_status:
+			message = sample['PatientID'] + " does not have a complete callset!"
+
+			raise ValueError(message)
+
+	def __call__(self, key = 'all'):
+		""" Retrieves the callset using exclusion/inclusion criteria
+			Parameters
+			----------
+				key: {'all', 'indel', 'snp'}: default 'all'
+					* 'all': returns indel/snp files for every caller.
+					* 'indel': Only returns the indels for each caller.
+					* 'snp': Only returns the snps for each caller.
+		"""
+
+		if key == 'all':
+			callset = self.split_callset
+		else:
+			if key == 'indel':  criteria = 'indel'
+			else: 				criteria = 'snp'
+			callset = {k.split('-')[0]:v for k, v in self.split_callset.items() if criteria in k}
+
+		return callset
+
+	def _generateFullCallset(self, original_callset):
+		""" Separates and tracks the indel/snp detected in all callsets.
+		"""
+		full_callset = dict()
+		for caller, filename in original_callset.items():
+			#Check if the indels/snps were separated by the caller.
+			if 'snp' in caller or 'indel' in caller:
+				path, basename = os.path.split(filename)
+				new_filename = os.path.join(path, basename)
+				vcftools.copyVcf(filename, new_filename)
+				full_callset[caller] = os.path.join(new_filename)
+			else: 
+				#Need to separate the indels/snps manually.
+				separated_callset = vcftools.splitVcf(filename, self.callset_folder)
+				full_callset[caller + '-' + 'snp'] = separated_callset['snp']
+				full_callset[caller + '-' + 'indel'] = separated_callset['indel']
+		return full_callset
+
+
+	def _verifyCallset(self):
+		expected_callers = [
+			'muse-indel', 'mutect2-indel', 'somaticsniper-indel', 
+			'muse-snp',   'mutect2-snp',   'somaticsniper-snp', 
+			'strelka-indel', 'strelka-snp', 
+			'varscan-indel', 'varscan-snp'
+		]
+
+
+		outputs_missing = any(not i in self.split_callset for i in expected_callers)
+		outputs_missing = any(not os.path.exists(i) for i in self.split_callset.values()) or outputs_missing
+		if outputs_missing:
+			print()
+			print("There were missing outputs:")
+			for key in expected_callers:
+				print('\t{}\t{}'.format(key, key in self.split_callset))
+			for key, filename in self.split_callset.items():
+				print("\t{}\t{}\t{}".format(key, os.path.exists(filename), filename))
+
+		return outputs_missing
+
+
 
 class Workflow:
 	def __init__(self, **kwargs):
 		pass
 
-class CombineCallsets:
-	"""Combine separated indel and snv files
+class MergeCallsets:
+	"""Merges callsets via GATK CombineVariants.
 		WARNING: CombineVariants._copy_vcf() uses hard filter to remove variants with '/' formatting
+		Requirements
+		------------
+			GATK
+			Reference Genome
 	"""
-	def __init__(self, sample, options, output_folder, variants):
+	def __init__(self, sample, options, output_folder, callset):
 		""" Parameters
 			----------
 				sample:
@@ -44,12 +143,13 @@ class CombineCallsets:
 		self.gatk_program = options['Programs']['GATK']
 		self.reference = options['Reference Files']['reference genome']
 
-		modified_variants = self._modify_variants(variants)
+		#modified_variants = self._modify_variants(variants)
 
-		snv_variants, indel_variants = self.splitIndelSnvVariants(modified_variants) #saved in same folder as parent
+		snp_variants   = callset('snp')
+		indel_variants = callset('indel')
 
-		output_basename = os.path.join(output_folder, "{0}_vs_{1}.merged".format(sample['NormalID'], sample['SampleID']))
-		self.snvs   = self.combineVariants(  snv_variants, output_basename + '.snp.vcf')
+		output_basename = os.path.join(output_folder, "{}.merged_variants".format(sample['PatientID']))
+		self.snps   = self.combineVariants(  snp_variants, output_basename + '.snp.vcf')
 		self.indels = self.combineVariants(indel_variants, output_basename + '.indel.vcf')
 
 	
@@ -157,7 +257,8 @@ class CombineCallsets:
 		"""
 
 		order = "mutect,varscan,strelka,muse,somaticsniper" #ordered by VAF confidence
-		
+		variant_command = ['--variant:{} "{}"'.format(k, v) for k, v in variants.items()]
+		variant_command = ' \\\n'.join(variant_command)
 		command = """java -jar "{gatk}" \
 			-T CombineVariants \
 			-R "{reference}" \
@@ -169,18 +270,22 @@ class CombineCallsets:
 			-o "{output}" \
 			-genotypeMergeOptions PRIORITIZE \
 			-priority {rod}"""
+		command = """java -jar "{gatk}" \
+			-T CombineVariants \
+			-R "{reference}" \
+			{variants}
+			-o "{output}" \
+			-genotypeMergeOptions PRIORITIZE \
+			-priority {rod}"""
 		command = command.format(
 				gatk = 		self.gatk_program,
 				reference = self.reference,
-				muse = 		variants['muse'],
-				mutect = 	variants['mutect'],
-				ss = 		variants['somaticsniper'],
-				strelka = 	variants['strelka'],
-				varscan = 	variants['varscan'],
+				variants = variant_command,
 				rod = 		order,
 				output = 	output_file)
+
 		if not os.path.exists(output_file):
-			systemtools.Terminal(command)
+			systemtools.Terminal(command, show_output = True)
 		return output_file
 	def catVariants(self, left, right):
 		""" Combines the SNV and Indel files. Assumes both are saved in the same folder. """
@@ -201,30 +306,7 @@ class CombineCallsets:
 		systemtools.Terminal(command)
 
 		return output_file
-	def splitIndelSnvVariants(self, variants):
-		""" Splits snvs and indels into separate files.
-		"""
-		snvs = dict()
-		indels = dict()
-		for caller, filename in variants.items():
-			if 'snv' in caller:
-				snvs[caller.replace('-snv', '')] = filename
-			elif 'indel' in caller:
-				indels[caller.replace('-indel', '')] = filename
-			else:
-				basename = os.path.splitext(filename)[0]
-				with open(filename) as vcf_file:
-					reader 			= vcf.Reader(vcf_file)
-					snv_writer 		= vcf.Writer(open(basename + '.snv.vcf', 'w'), reader)
-					indel_writer 	= vcf.Writer(open(basename + '.indel.vcf', 'w'), reader)
-					for record in reader:
-						if record.is_snp:
-							snv_writer.write_record(record)
-						elif record.is_indel:
-							indel_writer.write_record(record)
-				snvs[caller] = basename + '.snv.vcf'
-				indels[caller] = basename + '.indel.vcf'
-		return snvs, indels
+
 
 class Truthset:
 	"""
@@ -258,7 +340,7 @@ class Truthset:
 				verbose: bool, default False
 					Whether to print status messages.
 		"""
-		verbose = kwargs.get('verbose', False)
+		verbose = kwargs.get('verbose', True)
 		kwargs['intersection'] = kwargs.get('intersection', 5)
 		self.min_tumor_vaf = 0.08
 		self.max_normal_vaf = 0.03
@@ -268,16 +350,20 @@ class Truthset:
 		self.picard_program = options['Programs']['Picard']
 		self.reference 		= options['Reference Files']['reference genome']
 
-
-		
 		self.training_type = training_type
 		outputs = list()
 
+		
 		for sample in samples:
+			patient_folder = getPatientFolder(sample['PatientID'])
 			if verbose:
 				print(sample)
-			if training_type == 'Intersection': sample_variants = GetVariantList(sample)
-			elif training_type == 'RNA-seq': sample_variants = GetVariantList(sample, "RNA-seq")
+				print("Patient Folder:")
+				print(patient_folder)
+			
+
+			#if training_type == 'Intersection': 
+			#elif training_type == 'RNA-seq': sample_variants = GetVariantList(patient_folder, "RNA-seq", exclude = _exclusion_terms, logic = 'and')
 			sample_truthset = self._per_sample(sample, options, training_type, **kwargs)
 			outputs.append(sample_truthset)
 
@@ -293,7 +379,7 @@ class Truthset:
 	def __str__(self):
 		string = "Truthset(type = {}, filename = {})".format(self.training_type, self.filename)
 		return string
-	def _per_sample(self, variants, options, training_type, **kwargs):
+	def _per_sample(self, sample, options, training_type, **kwargs):
 		""" Generates individual truthsets per sample.
 			Available Keyword Arguments
 			---------------------------
@@ -301,26 +387,31 @@ class Truthset:
 				'variant_type': If not 'snv' or 'indel', the file will be split into
 					an 'snv' and 'indel' file.
 		"""
-		normalID = sample['NormalID']
-		tumorID = sample['SampleID']
-
-		vcf_filenames = self._get_vcf_files(sample, options, training_type)
-
-		output_vcf = os.path.join(                self.truthset_folder, "{0}_vs_{1}.{2}.truthset.vcf".format(normalID, tumorID, training_type))
-		snv_filename = snv_vcf = os.path.join(self.truthset_folder, "{0}_vs_{1}.{2}.snv.truthset.vcf".format(normalID, tumorID, training_type))
-		indel_filename = os.path.join(      self.truthset_folder, "{0}_vs_{1}.{2}.indel.truthset.vcf".format(NormalID, tumorID, training_type))
-		output_folder = os.path.join(self.truthset_folder, 'merged_vcfs', sample['PatientID'])
-		systemtools.checkDir(output_folder, True)
 		
-		combined_variants = CombineCallset(sample, options, output_folder, variants = variants)
+		normalID 	= sample['NormalID']
+		tumorID 	= sample['SampleID']
+		patientID 	= sample['PatientID']
+		_exclusion_terms = ['strelka', 'chromosome'] #Terms to determine which folders to skip when searching for variant files.
+		patient_folder = getPatientFolder(patientID)
+		sample_variants = GetVariantList(patient_folder, exclude = _exclusion_terms, logic = 'and')
+		#vcf_filenames = self._get_vcf_files(sample, options, training_type)
+
+		sample_variants = Callset(sample, sample_variants)
+		output_vcf 		= os.path.join(self.truthset_folder, "{}.{}.truthset.vcf".format(	   patientID, training_type))
+		snv_filename 	= os.path.join(self.truthset_folder, "{}.{}.snv.truthset.vcf".format(  patientID, training_type))
+		indel_filename 	= os.path.join(self.truthset_folder, "{}.{}.indel.truthset.vcf".format(patientID, training_type))
+		output_folder 	= os.path.join(self.truthset_folder, 'merged_vcfs', sample['PatientID'])
+		filetools.checkDir(output_folder, True)
+		
+		combined_variants = MergeCallsets(sample, options, output_folder, callset = sample_variants)
 		
 		#combined_variants = CombineVariants(sample, options, output_folder)
-		snv_variants = combined_variants.snvs
-		indel_variants = combined_variants.indels
+		snv_variants 	= combined_variants.snvs
+		indel_variants 	= combined_variants.indels
 		
 		#if not os.path.exists(output_vcf) or True:
-		snv_truthset = self._generate_truthset(snv_variants, snv_filename, training_type, **kwargs)
-		indel_truthset = self._generate_truthset(indel_variants, indel_filename, training_type, **kwargs)
+		snv_truthset 	= self._generate_truthset(snv_variants,  snv_filename,   training_type, **kwargs)
+		indel_truthset  = self._generate_truthset(indel_variants,indel_filename, training_type, **kwargs)
 
 		result = {
 			'PatientID': sample['PatientID'],
@@ -1266,15 +1357,19 @@ if __name__ == "__main__" and True:
 
 	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
-	full_sample_list_filename = os.path.join(documents_folder, "DNA-seq_Sample_List.tsv")
+	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
+
 	full_sample_list = tabletools.readCSV(full_sample_list_filename)
 
+
+
+	#pprint(full_sample_list)
 	training_type = 'Intersection'
-	training_samples = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
+	training_sample_ids = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
 
 
-	training_samples 	= [i for i in full_sample_list if i['PatientID'] in training_samples]
-	prediction_samples 	= [i for i in full_sample_list if i['PatientID'] not in training_samples]
+	training_samples 	= [i for i in full_sample_list if i['PatientID'] in training_sample_ids]
+	prediction_samples 	= [i for i in full_sample_list if i['PatientID'] not in training_sample_ids]
 
 	Pipeline(training_samples, prediction_samples, options, training_type)
 
