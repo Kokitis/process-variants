@@ -15,21 +15,27 @@ import shutil
 	3. Convert VCFs to MAF
 	4. Combine Patient MAFs
 """
-if os.name == 'nt':
+OPERATING_SYSTEM_NAME = os.name
+if OPERATING_SYSTEM_NAME == 'nt':
 	GITHUB_FOLDER = os.path.join(os.getenv('USERPROFILE'), 'Documents', 'Github')
 else:
 	GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
+
 sys.path.append(GITHUB_FOLDER)
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
 
+#Relevant Folders
+INPUT_VCF_FOLDER = ""
 
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
-GetVariantList = callertools.CallerOutputClassifier(reduce = True, verbose = True)
+
+
+
 def getPatientFolder(patientid):
 	patient_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs" , "original_callsets", patientid)
 	return patient_folder
@@ -45,12 +51,12 @@ class Callset:
 		else:
 			self.original_callset = callset
 
-		self.callset_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
+		self.output_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
 
 		filetools.checkDir(self.callset_folder, True)
 
 		#Split muse, mutect2, and somaticsniper into indel-snp callsets.
-		self.split_callset = self._generateFullCallset(self.original_callset)
+		self.split_callset = self._generateFullCallset(self.original_callset, self.output_folder)
 
 		callset_status = self._verifyCallset()
 		if callset_status:
@@ -77,21 +83,24 @@ class Callset:
 
 		return callset
 
-	def _generateFullCallset(self, original_callset):
+	def _generateFullCallset(self, original_callset, output_folder = None):
 		""" Separates and tracks the indel/snp detected in all callsets.
 		"""
+
 		full_callset = dict()
 		for caller, filename in original_callset.items():
+			if output_folder is None:
+				output_folder = os.path.dirname(filename)
 			#Check if the indels/snps were separated by the caller.
 			if 'snp' in caller or 'indel' in caller:
-				path, basename = os.path.split(filename)
-				new_filename = os.path.join(path, basename)
+				basename = os.path.basename(filename)
+				new_filename = os.path.join(output_folder, basename)
 				vcftools.copyVcf(filename, new_filename)
 				full_callset[caller] = os.path.join(new_filename)
 			else: 
 				#Need to separate the indels/snps manually.
-				separated_callset = vcftools.splitVcf(filename, self.callset_folder)
-				full_callset[caller + '-' + 'snp'] = separated_callset['snp']
+				separated_callset = vcftools.splitVcf(filename, output_folder)
+				full_callset[caller + '-' + 'snp']   = separated_callset['snp']
 				full_callset[caller + '-' + 'indel'] = separated_callset['indel']
 		return full_callset
 
@@ -117,21 +126,22 @@ class Callset:
 
 		return outputs_missing
 
+	def _addCallset(self, key, filename):
+		self.split_callset[key] = filename
 
-
-class Workflow:
-	def __init__(self, **kwargs):
-		pass
-
-class MergeCallsets:
+class MergeSampleCallsets:
 	"""Merges callsets via GATK CombineVariants.
 		WARNING: CombineVariants._copy_vcf() uses hard filter to remove variants with '/' formatting
+		Usage
+		-----
+			merger = MergeSampleCallsets()
+			output = merger(sample, output_folder, callset)
 		Requirements
 		------------
 			GATK
 			Reference Genome
 	"""
-	def __init__(self, sample, options, output_folder, callset):
+	def __init__(self, options, **kwargs):
 		""" Parameters
 			----------
 				sample:
@@ -139,20 +149,26 @@ class MergeCallsets:
 				output_folder:
 				variants:
 		"""
-		self.cv_output_folder = output_folder
-		self.gatk_program = options['Programs']['GATK']
-		self.reference = options['Reference Files']['reference genome']
+		if OPERATING_SYSTEM_NAME == 'nt':
+			print("WARNING: MergeCallsets depends on linux-only computers!")
 
-		#modified_variants = self._modify_variants(variants)
+		if options is not None:
+			self.gatk_program = options['Programs']['GATK']
+			self.reference = options['Reference Files']['reference genome']
+		else:
+			self.gatk_program = kwargs.get('GATK')
+			self.reference = kwargs.get('reference')
 
-		snp_variants   = callset('snp')
-		indel_variants = callset('indel')
+	def __call__(self, sample, output_folder, callset = None, **kwargs):
+		if callset is None:
+			patient_folder = getPatientFolder(patient_id)
+			callset = Callset(sample)
+		result = self._combineSplitVariants(sample, output_folder, callset, **kwargs)
+		return result
+			
 
-		output_basename = os.path.join(output_folder, "{}.merged_variants".format(sample['PatientID']))
-		self.snps   = self.combineVariants(  snp_variants, output_basename + '.snp.vcf')
-		self.indels = self.combineVariants(indel_variants, output_basename + '.indel.vcf')
-
-	
+	def _parse_input(self, **kwargs):
+		pass
 	def _modify_merged_vcf(self, filename):
 		basename = os.path.splitext(os.path.basename(filename))[0]
 		basename = basename + ".modified.vcf"
@@ -243,7 +259,36 @@ class MergeCallsets:
 		reader.formats['DP4'] = reader.formats['DP4']._replace(num=4)
 		reader.formats['DP4'] = reader.formats['DP4']._replace(type='Integer')
 		return reader
-	def combineVariants(self, variants, output_file):
+	def _combineSplitVariants(self, sample, output_folder, callset):
+		""" Merges the indel/snp variants separately.
+			Parameters
+			----------
+				sample: dict<>, string
+					sample information as a dict or the patient id.
+				output_folder: path
+					Folder to save the merged variant files in.
+				callset: Callset; default None
+					If not provided, a generic callset will be created.
+		"""
+		if isinstance(sample, dict):
+			patient_id = sample['PatientID']
+
+		snp_variants   = callset('snp')
+		indel_variants = callset('indel')
+
+		basename = "{}.merged_variants".format(patient_id)
+		output_snp_filename   = os.path.join(output_folder, basename + '.snp.vcf')
+		output_indel_filename = os.path.join(output_folder, basename + '.indel.vcf')
+
+		merged_snp_filname    = self.gatkCombineVariants(snp_variants,   output_snp_filename)
+		merged_indel_filename = self.gatkCombineVariants(indel_variants, output_indel_filename)
+
+		result = {
+			'snp': merged_snp_filname,
+			'indel': merged_indel_filename
+		}
+		return result
+	def gatkCombineVariants(self, variants, output_file):
 		""" Uses GATK CombineVariants to merge the calls from each caller into a single file.
 			Parameters
 			----------
@@ -398,19 +443,19 @@ class Truthset:
 
 		sample_variants = Callset(sample, sample_variants)
 		output_vcf 		= os.path.join(self.truthset_folder, "{}.{}.truthset.vcf".format(	   patientID, training_type))
-		snv_filename 	= os.path.join(self.truthset_folder, "{}.{}.snv.truthset.vcf".format(  patientID, training_type))
+		snp_filename 	= os.path.join(self.truthset_folder, "{}.{}.snv.truthset.vcf".format(  patientID, training_type))
 		indel_filename 	= os.path.join(self.truthset_folder, "{}.{}.indel.truthset.vcf".format(patientID, training_type))
 		output_folder 	= os.path.join(self.truthset_folder, 'merged_vcfs', sample['PatientID'])
 		filetools.checkDir(output_folder, True)
 		
-		combined_variants = MergeCallsets(sample, options, output_folder, callset = sample_variants)
+		merged_variants = GATKCombineVariants(sample, output_folder, callset = sample_variants)
 		
 		#combined_variants = CombineVariants(sample, options, output_folder)
-		snv_variants 	= combined_variants.snvs
-		indel_variants 	= combined_variants.indels
+		snv_variants 	= merged_variants['snp']
+		indel_variants 	= merged_variants['indel']
 		
 		#if not os.path.exists(output_vcf) or True:
-		snv_truthset 	= self._generate_truthset(snv_variants,  snv_filename,   training_type, **kwargs)
+		snv_truthset 	= self._generate_truthset(snp_variants,  snp_filename,   training_type, **kwargs)
 		indel_truthset  = self._generate_truthset(indel_variants,indel_filename, training_type, **kwargs)
 
 		result = {
@@ -1350,10 +1395,20 @@ class Pipeline:
 """
 	Truthset -> Somaticseq training -> somaticseq prediction -> filter -> convert to MAF - > Combine MAFs
 """
+###################################################################################################
+########################## Define global objects used in the pipeline #############################
+###################################################################################################
+options = configparser.ConfigParser()
+options.read(OPTIONS_FILENAME)
+GetVariantList = callertools.CallerOutputClassifier(reduce = True, verbose = True)
+GATKCombineVariants = MergeSampleCallsets(options)
+
+###################################################################################################
+###################################### Run the Pipeline ##########################################
+###################################################################################################
 
 if __name__ == "__main__" and True:
-	options = configparser.ConfigParser()
-	options.read(OPTIONS_FILENAME)
+
 
 	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 

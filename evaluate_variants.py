@@ -21,43 +21,6 @@ OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_con
 TEST_MAF_FILE = ""
 TEST_SEG_FILE = ""
 
-def Terminal(command, useSystem = True, toFile = False):
-	if useSystem:
-		os.system(command)
-		output = "os.system({0})".format("command")
-	else:
-		result = subprocess.Popen(command, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
-		output = str(result.stdout.read(),'utf-8')
-
-	if toFile:
-		with open(CONSOLE_LOG_FILE, 'a') as console_log_file:
-			console_log_file.write(output)
-
-	return output
-
-def checkdir(path, full = False):
-	if not os.path.isdir(path):
-		if full:	os.makedirs(path)
-		else:		os.mkdir(path)
-
-def readTSV(filename, headers = False):
-	with open(filename, 'r') as file1:
-		reader = csv.DictReader(file1, delimiter = '\t')
-		fieldnames = reader.fieldnames
-		reader = list(reader)
-
-	if headers: return reader, fieldnames
-	else:       return reader
-
-def writeTSV(table, filename, fieldnames = None):
-	if fieldnames is None:
-		fieldnames = sorted(table[0].keys())
-	with open(filename, 'w', newline = '') as file1:
-		writer = csv.DictWriter(file1, delimiter = '\t', fieldnames = fieldnames)
-		writer.writeheader()
-		writer.writerows(table)
-	return filename
-
 class Workflow:
 	def __init__(self, **kwargs):
 		self.setupEnvironment(**kwargs)
