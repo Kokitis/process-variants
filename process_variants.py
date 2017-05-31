@@ -43,7 +43,7 @@ def getPatientFolder(patientid):
 class Callset:
 	""" Collects and manages the callset belonging to a single patient. """
 
-	def __init__(self, sample, callset = None):
+	def __init__(self, sample, callset = None, options = None):
 		self.sample = sample
 		if callset is None:
 			patient_folder = getPatientFolder(sample['PatientID'])
@@ -53,11 +53,15 @@ class Callset:
 
 		self.output_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
 
-		filetools.checkDir(self.callset_folder, True)
+		filetools.checkDir(self.output_folder, True)
 
 		#Split muse, mutect2, and somaticsniper into indel-snp callsets.
 		self.split_callset = self._generateFullCallset(self.original_callset, self.output_folder)
-
+		if options is not None:
+			somaticseq_folder = options['Programs']['SomaticSeq']
+			self.output_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "modified_callsets", sample['PatientID'])
+			filetools.checkDir(self.output_folder, True)
+			self.split_callset = self._modifyCallset(sample, self.split_callset, self.output_folder, somaticseq_folder)
 		callset_status = self._verifyCallset()
 		if callset_status:
 			message = sample['PatientID'] + " does not have a complete callset!"
@@ -94,8 +98,10 @@ class Callset:
 			#Check if the indels/snps were separated by the caller.
 			if 'snp' in caller or 'indel' in caller:
 				basename = os.path.basename(filename)
+				basename = os.path.splitext(basename)[0]
 				new_filename = os.path.join(output_folder, basename)
-				vcftools.copyVcf(filename, new_filename)
+				#vcftools.copyVcf(filename, new_filename)
+				shutil.copy2(filename, new_filename)
 				full_callset[caller] = os.path.join(new_filename)
 			else: 
 				#Need to separate the indels/snps manually.
@@ -103,6 +109,11 @@ class Callset:
 				full_callset[caller + '-' + 'snp']   = separated_callset['snp']
 				full_callset[caller + '-' + 'indel'] = separated_callset['indel']
 		return full_callset
+
+	def _modifyCallset(self, sample, callset, output_folder, somaticseq_folder):
+		#sample, variants, output_folder, somaticseq_folder
+		modified_callset = vcftools.fixRawCallerOutputs(sample, callset, output_folder, somaticseq_folder)
+		return modified_callset
 
 
 	def _verifyCallset(self):
@@ -301,7 +312,7 @@ class MergeSampleCallsets:
 					Format: {NormalID}_vs_{TumorID}.{CallerName}.{TAG}.merged.vcf
 		"""
 
-		order = "mutect,varscan,strelka,muse,somaticsniper" #ordered by VAF confidence
+		order = "mutect2,varscan,strelka,muse,somaticsniper" #ordered by VAF confidence
 		variant_command = ['--variant:{} "{}"'.format(k, v) for k, v in variants.items()]
 		variant_command = ' \\\n'.join(variant_command)
 		command = """java -jar "{gatk}" \
@@ -318,7 +329,7 @@ class MergeSampleCallsets:
 		command = """java -jar "{gatk}" \
 			-T CombineVariants \
 			-R "{reference}" \
-			{variants}
+			{variants} \
 			-o "{output}" \
 			-genotypeMergeOptions PRIORITIZE \
 			-priority {rod}"""
@@ -441,7 +452,7 @@ class Truthset:
 		sample_variants = GetVariantList(patient_folder, exclude = _exclusion_terms, logic = 'and')
 		#vcf_filenames = self._get_vcf_files(sample, options, training_type)
 
-		sample_variants = Callset(sample, sample_variants)
+		sample_variants = Callset(sample, sample_variants, options = options)
 		output_vcf 		= os.path.join(self.truthset_folder, "{}.{}.truthset.vcf".format(	   patientID, training_type))
 		snp_filename 	= os.path.join(self.truthset_folder, "{}.{}.snv.truthset.vcf".format(  patientID, training_type))
 		indel_filename 	= os.path.join(self.truthset_folder, "{}.{}.indel.truthset.vcf".format(patientID, training_type))
@@ -451,18 +462,18 @@ class Truthset:
 		merged_variants = GATKCombineVariants(sample, output_folder, callset = sample_variants)
 		
 		#combined_variants = CombineVariants(sample, options, output_folder)
-		snv_variants 	= merged_variants['snp']
+		snp_variants 	= merged_variants['snp']
 		indel_variants 	= merged_variants['indel']
 		
 		#if not os.path.exists(output_vcf) or True:
-		snv_truthset 	= self._generate_truthset(snp_variants,  snp_filename,   training_type, **kwargs)
+		snp_truthset 	= self._generate_truthset(snp_variants,  snp_filename,   training_type, **kwargs)
 		indel_truthset  = self._generate_truthset(indel_variants,indel_filename, training_type, **kwargs)
 
 		result = {
 			'PatientID': sample['PatientID'],
 			'filename': output_vcf,
 			'filename-indel': indel_filename,
-			'filename-snv': snv_filename
+			'filename-snv': snp_filename
 		}
 		return result
 
