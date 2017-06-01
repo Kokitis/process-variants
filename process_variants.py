@@ -43,17 +43,18 @@ def getPatientFolder(patientid):
 class Callset:
 	""" Collects and manages the callset belonging to a single patient. """
 
-	def __init__(self, sample, callset = None, options = None):
+	def __init__(self, sample, kind = None, callset = None, options = None):
 		self.sample = sample
 		if callset is None:
 			patient_folder = getPatientFolder(sample['PatientID'])
-			self.original_callset = GetVariantList(patient_folder)
+			new_callset = GetVariantList(patient_folder)
+			self.add('original', new_callset) 
 		else:
-			self.original_callset = callset
+			self.add(kind, callset)
 
-		self.output_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
+		#self.output_folder = os.path.join(PIPELINE_FOLDER, "1_input_vcfs", "full_callsets", sample['PatientID'])
 
-		filetools.checkDir(self.output_folder, True)
+		#filetools.checkDir(self.output_folder, True)
 
 		#Split muse, mutect2, and somaticsniper into indel-snp callsets.
 		self.split_callset = self._generateFullCallset(self.original_callset, self.output_folder)
@@ -68,11 +69,14 @@ class Callset:
 
 			raise ValueError(message)
 
-	def __call__(self, key = 'all'):
+	def __call__(self, kind, section = 'all'):
 		""" Retrieves the callset using exclusion/inclusion criteria
 			Parameters
 			----------
-				key: {'all', 'indel', 'snp'}: default 'all'
+				kind: {'original', 'split original', ''}
+					The version of the callsdt to retrieve. Every time the callset
+					is modified, it is saved as a separate callset.
+				section: {'all', 'indel', 'snp'}: default 'all'
 					* 'all': returns indel/snp files for every caller.
 					* 'indel': Only returns the indels for each caller.
 					* 'snp': Only returns the snps for each caller.
@@ -113,8 +117,18 @@ class Callset:
 	def _modifyCallset(self, sample, callset, output_folder, somaticseq_folder):
 		#sample, variants, output_folder, somaticseq_folder
 		modified_callset = vcftools.fixRawCallerOutputs(sample, callset, output_folder, somaticseq_folder)
+		for caller, source in callset.items():
+			destination     = modified_callset[caller]
+			source_md5      = filetools.generateFileMd5(source)
+			destination_md5 = filetools.generateFileMd5(destination)
+			print(caller)
+			print("Source:      {}\t{}".format(source_md5, source))
+			print("Destination: {}\t{}".format(destination_md5, destination))
 		return modified_callset
 
+	def _splitCallset(self, callset):
+		
+		pass
 
 	def _verifyCallset(self):
 		expected_callers = [
@@ -137,8 +151,20 @@ class Callset:
 
 		return outputs_missing
 
-	def _addCallset(self, key, filename):
-		self.split_callset[key] = filename
+	def add(self, kind, variants, split = False):
+		""" Adds a version of the callset to the object.
+			Parameters
+			----------
+				kind: string
+					A name that identified which section of the pipeline this
+					callset comes from.
+				variants: dict<path>
+					The callset.
+				split: bool; default False
+					Whether to split the callset into indels/snps. Files are saved to the
+					same folder as the original.
+		"""
+		self.callsets[kind] = variants
 
 class MergeSampleCallsets:
 	"""Merges callsets via GATK CombineVariants.
@@ -246,6 +272,7 @@ class MergeSampleCallsets:
 		""" Some caller outputs are inconsistent and need to be modified.
 		"""
 		output_folder = self.cv_output_folder
+		output_variants = dict()
 		for caller, vcf_filename in vcfs.items():
 			basename = os.path.splitext(os.path.basename(vcf_filename))[0] + ".modified.vcf"
 			output_file = os.path.join(output_folder, basename)
@@ -253,9 +280,9 @@ class MergeSampleCallsets:
 				reader = vcf.Reader(vcf_file)
 				if 'varscan' in caller:
 					reader = self._modify_varscan_output(reader, output_file)
-				vcfs[caller] = self._copy_vcf(reader, output_file)
+				output_variants[caller] = self._copy_vcf(reader, output_file)
 
-		return vcfs
+		return output_variants
 	def _copy_vcf(self, reader, output_file):
 		with open(output_file, 'w') as file1:
 			writer = vcf.Writer(file1, reader)
@@ -444,10 +471,11 @@ class Truthset:
 					an 'snv' and 'indel' file.
 		"""
 		
-		normalID 	= sample['NormalID']
-		tumorID 	= sample['SampleID']
+		#normalID 	= sample['NormalID']
+		#tumorID 	= sample['SampleID']
 		patientID 	= sample['PatientID']
 		_exclusion_terms = ['strelka', 'chromosome'] #Terms to determine which folders to skip when searching for variant files.
+		
 		patient_folder = getPatientFolder(patientID)
 		sample_variants = GetVariantList(patient_folder, exclude = _exclusion_terms, logic = 'and')
 		#vcf_filenames = self._get_vcf_files(sample, options, training_type)
@@ -1417,6 +1445,29 @@ GATKCombineVariants = MergeSampleCallsets(options)
 ###################################################################################################
 ###################################### Run the Pipeline ##########################################
 ###################################################################################################
+def test1():
+	caller_classifier = callertools.CallerOutputClassifier()
+	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
+
+	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
+
+	full_sample_list = tabletools.readCSV(full_sample_list_filename)
+
+	for sample in full_sample_list:
+		output_folder = "/home/upmc/Documents/debug_folder/"
+		patient_folder = getPatientFolder(sample['PatientID'])
+		patient_variants = caller_classifier(patient_folder, exclude = ['strelka', 'chromosome'], logic = 'and')
+		patient_variants = {k:v[0] for k, v in patient_variants.items()}
+
+		new_variants = vcftools.fixRawCallerOutputs(sample, patient_variants, output_folder, options['Programs']['SomaticSeq'])
+		for caller, source in sorted(patient_variants.items()):
+			destination     = new_variants[caller]
+			print(caller)
+			source_md5      = filetools.generateFileMd5(source)
+			destination_md5 = filetools.generateFileMd5(destination)
+			
+			print("\tSource:      {}\t{}".format(source_md5, source))
+			print("\tDestination: {}\t{}".format(destination_md5, destination))
 
 if __name__ == "__main__" and True:
 
@@ -1431,8 +1482,8 @@ if __name__ == "__main__" and True:
 
 	#pprint(full_sample_list)
 	training_type = 'Intersection'
-	training_sample_ids = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
-
+	#training_sample_ids = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
+	training_sample_ids = ['TCGA-2H-A9GR']
 
 	training_samples 	= [i for i in full_sample_list if i['PatientID'] in training_sample_ids]
 	prediction_samples 	= [i for i in full_sample_list if i['PatientID'] not in training_sample_ids]
@@ -1453,4 +1504,5 @@ elif False:
 	#GATKCombineVariants(sample, options, variants, output_folder):
 	output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder/"
 	CombineCallset(sample, options, output_folder)
-	#1940
+elif True:
+	test1()
