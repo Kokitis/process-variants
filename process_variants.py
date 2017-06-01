@@ -74,6 +74,16 @@ def getCallsetFolder(patientid, kind = 'original'):
 def getPipelineFolder(step):
 	""" Retrieves the path to a folder reserved for a specific
 		step in the pipeline.
+		Pipeline Structure:
+			callsets
+			truthset
+				files
+					
+			somaticseq
+				prediction
+					[training_type]
+				training
+					[training_type]
 	"""
 	switch = lambda s: step in s
 	if 'callsets' in step:
@@ -936,8 +946,8 @@ class SomaticSeqPipeline:
 		self.training_type = truthset.training_type
 		self.truthset = truthset.export()
 
-		self.training_folder   = os.path.join(getPipelineFolder('somaticseq'), 'training-'   + self.training_type)
-		self.prediction_folder = os.path.join(getPipelineFolder('somaticseq'), 'prediction-' + self.training_type)
+		self.training_folder   = os.path.join(getPipelineFolder('somaticseq-training'),   self.training_type)
+		self.prediction_folder = os.path.join(getPipelineFolder('somaticseq-prediction'), self.training_type)
 		filetools.checkDir(self.training_folder)
 		filetools.checkDir(self.prediction_folder)
 
@@ -1099,10 +1109,8 @@ class SomaticSeqPipeline:
 			'snpClassifier':  os.path.join(output_folder)
 		}
 
-		if not os.path.exists(expected_output['indelClassifier']):
-			#os.system(indel_command)
-		if not os.path.exists(expected_output['snpClassifer']):
-			#os.system(snp_command)
+		systemtools.Terminal(indel_command)
+		systemtools.Terminal(snp_command)
 
 		return expected_output
 
@@ -1341,7 +1349,7 @@ class Pipeline:
 			for element in prediction_samples:
 				print("\t", element['PatientID'])
 
-		all_samples = training_samples + prediction_samples
+		#all_samples = training_samples + prediction_samples
 		
 		##################### Pre-process the callsets of the training samples. ####################
 		for sample in training_samples:
