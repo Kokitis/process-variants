@@ -1,13 +1,10 @@
 import os
-import collections
 import sys
 
 import configparser
 
 import vcf
 import csv
-from pprint import pprint
-import shutil
 
 """
     1. Harmonize VCF fields
@@ -15,25 +12,25 @@ import shutil
     3. Convert VCFs to MAF
     4. Combine Patient MAFs
 """
-OPERATING_SYSTEM_NAME = os.name
-if OPERATING_SYSTEM_NAME == 'nt':
+if os.name == 'nt':
     GITHUB_FOLDER = os.path.join(os.getenv('USERPROFILE'), 'Documents', 'Github')
 else:
     GITHUB_FOLDER = os.path.join(os.getenv('HOME'), 'Documents', 'Github')
-
 sys.path.append(GITHUB_FOLDER)
-PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
-OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
-
-#Relevant Folders
-VCF_FOLDER = os.path.join(PIPELINE_FOLDER, "1_vcf_files")
-TRUTHSET_FOLDER = os.path.join(PIPELINE_FOLDER, "2_truthsets")
 
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
+
+PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
+OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
+
+# Relevant Folders
+VCF_FOLDER = os.path.join(PIPELINE_FOLDER, "1_vcf_files")
+TRUTHSET_FOLDER = os.path.join(PIPELINE_FOLDER, "2_truthsets")
+
 
 def getCallsetFolder(patientid, kind = 'original'):
     """ 
@@ -67,11 +64,15 @@ def getCallsetFolder(patientid, kind = 'original'):
         subfolder = "original_split_callset"
     elif kind == 'merged':
         subfolder = 'merged_callset'
+    else:
+        message = "The callset type is not defined: '{}'".format(kind)
+        raise ValueError(message)
 
     patient_folder = os.path.join(PIPELINE_FOLDER, callset_folder, patientid, subfolder)
     return patient_folder
 
-def getPipelineFolder(step):
+
+def getPipelineFolder(step, **kwargs):
     """ Retrieves the path to a folder reserved for a specific
         step in the pipeline.
         Pipeline Structure:
@@ -84,8 +85,8 @@ def getPipelineFolder(step):
                     [training_type]
                 training
                     [training_type]
+            vcftomaf
     """
-    switch = lambda s: step in s
     if 'callsets' in step:
         pipeline_folder = os.path.join(PIPELINE_FOLDER, "1_callsets")
     elif 'truthset' in step:
@@ -93,6 +94,8 @@ def getPipelineFolder(step):
             pipeline_folder = os.path.join(PIPELINE_FOLDER, 'truthset')
         elif step == 'truthset-files':
             pipeline_folder = os.path.join(PIPELINE_FOLDER, 'truthset', kwargs['patientId'])
+        else:
+            pipeline_folder = None
     elif 'somaticseq' in step:
         if step == 'somaticseq':
             pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq')
@@ -100,21 +103,47 @@ def getPipelineFolder(step):
             pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq', 'training')
         elif step == 'somaticseq-prediction':
             pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq', 'prediction')
+        else:
+            pipeline_folder = None
+    elif 'maf' in step:
+        pipeline_folder = os.path.join(PIPELINE_FOLDER, 'vcftomaf')
     else:
+        pipeline_folder = None
+
+    if pipeline_folder is None:
         message = "The indicated pipeline step is not defined: " + step
         raise KeyError(message)
 
     return pipeline_folder
 
-def getSampleCallset(patientid, kind):
+
+def getSampleCallset(patientid, callset_type, group = 'all'):
+    """ Search and select a specific callset for a sample.
+        Parameters
+        ----------
+            patientid:  string, dict<>
+                The patient barcode or a dictionary containing the patient barcode saved
+                under the key 'PatientID'.
+            callset_type: {'original', 'original-fixed', 'original-fixed-split'}
+            group: {'all', 'indel', 'snp'}; default 'all
+        Returns
+        -------
+            A dictionary mapping callers to output files.
+    """
     if isinstance(patientid, dict):
         patientid = patientid['PatientID']
-    _exclusion_terms = ['strelka', 'chromosome'] #Terms to determine which folders to skip when searching for variant files.
 
-    callset_folder = getCallsetFolder(patientid, kind = kind)
+    # Terms to determine which folders to skip when searching for variant files.
+    _exclusion_terms = ['strelka', 'chromosome']
+
+    callset_folder = getCallsetFolder(patientid, kind = callset_type)
     sample_variants = GET_CALLSET(callset_folder, exclude = _exclusion_terms, logic = 'and')
 
+    if group == 'all':
+        raise NotImplementedError()
+
     return sample_variants
+
 
 class GATKMergeSampleCallsets:
     """Merges callsets via GATK CombineVariants.
@@ -128,20 +157,18 @@ class GATKMergeSampleCallsets:
             GATK
             Reference Genome
     """
-    def __init__(self, options, **kwargs):
+    def __init__(self, merge_options, **kwargs):
         """ Parameters
             ----------
                 sample:
-                options:
+                merge_options:
                 output_folder:
                 variants:
         """
-        if OPERATING_SYSTEM_NAME == 'nt':
-            print("WARNING: MergeCallsets depends on linux-only external programs!")
 
-        if options is not None:
-            self.gatk_program = options['Programs']['GATK']
-            self.reference = options['Reference Files']['reference genome']
+        if merge_options is not None:
+            self.gatk_program = merge_options['Programs']['GATK']
+            self.reference = merge_options['Reference Files']['reference genome']
         else:
             self.gatk_program = kwargs.get('GATK')
             self.reference = kwargs.get('reference')
@@ -158,20 +185,29 @@ class GATKMergeSampleCallsets:
                     folder to use. Both 'patientId' and 'kind' must be provided.
 
         """
-        filename = kwargs.get('filename')
-        if not filename:
+        output_filename = kwargs.get('filename')
+        if not output_filename:
             patientid = kwargs.get('patientId')
-            patient_folder = getPatientFolder(patientid, kwargs.get('kind'))
+            # Both 'patientId' and 'kind' must be provided.
+            patient_folder = getPipelineFolder(patientid, **kwargs)
             basename = "{}.merged.vcf".format(patientid)
-            filename = os.path.join(patient_folder, basename)
+            output_filename = os.path.join(patient_folder, basename)
         self._checkCallsetFormat(callset)
-        merged_callset_filename = self.gatkCombineVariants(callset, output_filename)
-        return merged_callset_filename
+        output_filename = self.gatkCombineVariants(callset, output_filename)
+        return output_filename
             
     def _modify_merged_vcf(self, filename):
+        """ Adds the VAF to the 'Info' field of the output file.
+            The new file will be saved to the same folder as the original.
+        :param filename: string
+            Path to the merged file.
+        :return: string
+            path to the output file.
+        """
+        output_folder = os.path.dirname(filename)
         basename = os.path.splitext(os.path.basename(filename))[0]
         basename = basename + ".modified.vcf"
-        output_file = os.path.join(self.output_folder, basename)
+        output_file = os.path.join(output_folder, basename)
 
         with open(filename, 'r') as vcf_file:
             reader = vcf.Reader(vcf_file)
@@ -185,11 +221,12 @@ class GATKMergeSampleCallsets:
                     writer.write_record(record)
 
         return output_file
-    def _checkCallsetFormat(self):
+
+    @staticmethod
+    def _checkCallsetFormat(callset):
         """ Ensures a callset is formatted as a dictionary with a single file
             per caller. 
         """
-        callset_valid = True
         caller_name_format_status = any('-' in c for c in callset.keys())
 
         callset_valid = not caller_name_format_status
@@ -198,7 +235,8 @@ class GATKMergeSampleCallsets:
             raise ValueError(message)
         return caller_name_format_status
 
-    def _getVAF(self, record):
+    @staticmethod
+    def _getVAF(record):
         """ Use DP4 instead of DP
             Parameters
             ----------
@@ -212,44 +250,38 @@ class GATKMergeSampleCallsets:
                     * 'vaf': The variant allele frequency, in the range 0 - 100.
         """
         info_keys = record.INFO.keys()
-        sample = [i for i in record.samples if i.sample == 'TUMOR'].pop()
+        record_sample = [i for i in record.samples if i.sample == 'TUMOR'].pop()
         if 'FREQ' in info_keys:
-            VAF = float(sample['FREQ'][:-1])
+            VAF = float(record_sample['FREQ'][:-1])
         elif 'DP' in info_keys and 'AD' in info_keys:
-            reads = sample['DP']
-            alleles = sample['AD'][1]
+            reads = record_sample['DP']
+            alleles = record_sample['AD'][1]
             VAF = (alleles / reads) * 100
         elif 'AF' in info_keys:
-            VAF = sample['AF']
+            VAF = record_sample['AF']
         elif 'DP4' in info_keys:
-            reads = sum(sample['DP4'])
-            alleles = sum(sample['DP4'][2:])
+            reads = sum(record_sample['DP4'])
+            alleles = sum(record_sample['DP4'][2:])
             VAF = alleles / reads
         else:
             alleles = [i for i in ['A', 'C', 'G', 'T'] if i != record.REF]
-            sample_reads = sum([sample[i+'U'][1] for i in (alleles + [record.REF])])
-            sample_alleles = sum([sample[i+'U'][1] for i in alleles])
+            sample_reads = sum([record_sample[i+'U'][1] for i in (alleles + [record.REF])])
+            sample_alleles = sum([record_sample[i+'U'][1] for i in alleles])
             if sample_reads == 0: sample_vaf = 0
             else:
                 sample_vaf = sample_alleles / sample_reads
             VAF = sample_vaf
         return VAF
 
-        result = {
-            'ALLELES': sample_alleles,
-            'READS': sample_reads,
-            'VAF': float("{0:.5f}".format(sample_vaf)),
-        }
-        return result
-
     def _modify_variants(self, vcfs):
         """ Some caller outputs are inconsistent and need to be modified.
         """
-        output_folder = self.cv_output_folder
         output_variants = dict()
         for caller, vcf_filename in vcfs.items():
+            current_output_folder = os.path.dirname(vcf_filename)
             basename = os.path.splitext(os.path.basename(vcf_filename))[0] + ".modified.vcf"
-            output_file = os.path.join(output_folder, basename)
+            output_file = os.path.join(current_output_folder, basename)
+
             with open(vcf_filename, 'r') as vcf_file:
                 reader = vcf.Reader(vcf_file)
                 if 'varscan' in caller:
@@ -257,6 +289,7 @@ class GATKMergeSampleCallsets:
                 output_variants[caller] = self._copy_vcf(reader, output_file)
 
         return output_variants
+
     def _copy_vcf(self, reader, output_file):
         with open(output_file, 'w') as file1:
             writer = vcf.Writer(file1, reader)
@@ -267,11 +300,14 @@ class GATKMergeSampleCallsets:
                 else:
                     writer.write_record(record)
         return output_file
-    def _modify_varscan_output(self, reader, filename):
+
+    @staticmethod
+    def _modify_varscan_output(reader):
         reader.formats['DP4'] = reader.formats['DP4']._replace(num=4)
         reader.formats['DP4'] = reader.formats['DP4']._replace(type='Integer')
         return reader
-    def _combineSplitVariants(self, sample, output_folder, callset):
+
+    def _combineSplitVariants(self, patientId, output_folder, callset):
         """ Merges the indel/snp variants separately.
             Parameters
             ----------
@@ -282,8 +318,8 @@ class GATKMergeSampleCallsets:
                 callset: Callset; default None
                     If not provided, a generic callset will be created.
         """
-        if isinstance(sample, dict):
-            patient_id = sample['PatientID']
+        if isinstance(patientId, dict):
+            patient_id = patientId['PatientID']
 
         snp_variants   = callset('snp')
         indel_variants = callset('indel')
@@ -300,6 +336,7 @@ class GATKMergeSampleCallsets:
             'indel': merged_indel_filename
         }
         return result
+
     def gatkCombineVariants(self, variants, output_file):
         """ Uses GATK CombineVariants to merge the calls from each caller into a single file.
             Parameters
@@ -309,11 +346,11 @@ class GATKMergeSampleCallsets:
                     Format: {NormalID}_vs_{TumorID}.{CallerName}.{TAG}.harmonized.vcf
             Returns
             -------
-                Output_filename: string
+                Output_file: string
                     Format: {NormalID}_vs_{TumorID}.{CallerName}.{TAG}.merged.vcf
         """
 
-        order = "mutect2,varscan,strelka,muse,somaticsniper" #ordered by VAF confidence
+        order = "mutect2,varscan,strelka,muse,somaticsniper"  # ordered by VAF confidence
         variant_command = ['--variant:{} "{}"'.format(k, v) for k, v in variants.items()]
         variant_command = ' \\\n'.join(variant_command)
         command = """java -jar "{gatk}" \
@@ -326,12 +363,13 @@ class GATKMergeSampleCallsets:
         command = command.format(
                 gatk =      self.gatk_program,
                 reference = self.reference,
-                variants = variant_command,
+                variants =  variant_command,
                 rod =       order,
                 output =    output_file)
 
         systemtools.Terminal(command, show_output = True)
         return output_file
+
     def catVariants(self, left, right):
         """ Combines the SNV and Indel files. Assumes both are saved in the same folder. """
         l = os.path.splitext(os.path.splitext(left)[0])[0]
@@ -371,7 +409,7 @@ class Truthset:
         -----------
 
     """
-    def __init__(self, samples, options, training_type, **kwargs):
+    def __init__(self, samples, truthset_options, truthset_type, **kwargs):
         """ Generates a truthset based on one or more samples.
             Option 1: intersection of all 5 callers.
             Option 2: Dream-SEQ data
@@ -382,8 +420,8 @@ class Truthset:
                     A list of samples to base the truthset on. 
                     The sample variants will be found separately.
                     Only the original callset can be used to generate the truthset.
-                options: dict<>
-                training_type: {'Intersection', 'RNA-seq'}
+                truthset_options: dict<>
+                truthset_type: {'Intersection', 'RNA-seq'}
                 verbose: bool, default False
                     Whether to print status messages.
             Keyword Arguments
@@ -396,38 +434,33 @@ class Truthset:
                     variant to have it marked as a true positive.
         """
         verbose = kwargs.get('verbose', True)
+        if verbose:
+            print("Generating Truthset...")
         kwargs['indel_intersection'] = kwargs.get('indel_intersection', 2)
         kwargs['snp_intersection']   = kwargs.get(  'snp_intersection', 5)
 
         self.min_tumor_vaf  = 0.08
         self.max_normal_vaf = 0.03
 
-        #self.truthset_folder = TRUTHSET_FOLDER
-        self.gatk_program   = options['Programs']['GATK']
-        self.picard_program = options['Programs']['Picard']
-        self.reference      = options['Reference Files']['reference genome']
-        self.training_type = training_type
+        self.gatk_program   = truthset_options['Programs']['GATK']
+        self.picard_program = truthset_options['Programs']['Picard']
+        self.reference      = truthset_options['Reference Files']['reference genome']
+        self.training_type = truthset_type
         outputs = list()
     
-        #Generate a separate truthset for each sample, then merge.
+        # Generate a separate truthset for each sample, then merge.
         for sample in samples:
-            #if training_type == 'Intersection': 
-            #elif training_type == 'RNA-seq': sample_variants = GetVariantList(patient_folder, "RNA-seq", exclude = _exclusion_terms, logic = 'and')
-            sample_truthset = self._generateSampleTruthset(sample, training_type, **kwargs)
+            sample_truthset = self._generateSampleTruthset(sample, truthset_type, **kwargs)
             outputs.append(sample_truthset)
 
         if len(outputs) == 1:
             sample_truthset = outputs[0]
         else:
-            sample_truthset = self._combineTruthsets(outputs, options)
-        #self.truthset = sample_truthset['truthset']
-        #self.filename       = sample_truthset['filename']
+            sample_truthset = self._combineTruthsets(outputs, truthset_options)
+
         self.indel_filename = sample_truthset['filename-indel']
         self.snp_filename   = sample_truthset['filename-snv']
 
-    def __str__(self):
-        string = "Truthset(type = {}, filename = {})".format(self.training_type, self.filename)
-        return string
     def _generateSampleTruthset(self, sample, training_type, **kwargs):
         """ Generates individual truthsets per sample.
             Available Keyword Arguments
@@ -438,31 +471,59 @@ class Truthset:
         """
         patientId = sample['PatientID']
         ################################# Define Filenames ########################################
+        base_truthset_files_folder = getPipelineFolder('truthset-files', patientId = patientId)
+        filetools.checkDir(base_truthset_files_folder)
+
         final_indel_truthset_filename = os.path.join(
-            getTruthsetFolder(patientId),
-            "{}.{}.indel.truthset.vcf".format(patientId, training_type))
+            base_truthset_files_folder,
+            "{}.{}.indel.truthset.vcf".format(patientId, training_type)
+        )
 
         final_snp_truthset_filename = os.path.join(
-            getTruthsetFolder(patientId),
-            "{}.{}.snp.truthset.vcf".format(  patientId, training_type))
+            base_truthset_files_folder,
+            "{}.{}.snp.truthset.vcf".format(patientId, training_type)
+        )
+
+        merged_indel_callset_filename = os.path.join(
+            base_truthset_files_folder,
+            "{}.merged.indel.vcf".format(patientId)
+        )
+        merged_snp_callset_filename = os.path.join(
+            base_truthset_files_folder,
+            "{}.merged.indel.vcf".format(patientId)
+        )
 
         ###### Merge the callset files. The final truthset will be generated from this file. ######
-        #Retrieve the callset for this sample.
-        #Want to use the files that have been split into indels/snps and corrected.
+        # Retrieve the callset for this sample.
+        # Want to use the files that have been split into indels/snps and corrected.
         sample_indel_callset = getSampleCallset(patientId, 'original-fixed-split', 'indel')
         sample_snp_callset   = getSampleCallset(patientId, 'original-fixed-split', 'snp')
         
-        #Merge the full outputs from each caller.
-        #The snps and indels need to be merged separately of each other, due to varscan/strelka
-        merged_indel_callset_filename = GATK_MERGE_CALLSET(sample_indel_callset, filename = merged_indel_callset_filename)
-        merged_snp_callset_filename   = GATK_MERGE_CALLSET(sample_snp_callset,   filename = merged_snp_callset_filename)
+        # Merge the full outputs from each caller.
+        # The snps and indels need to be merged separately of each other, due to varscan/strelka
+        merged_indel_callset_filename = GATK_MERGE_CALLSET(
+            callset = sample_indel_callset,
+            filename = merged_indel_callset_filename
+        )
+        merged_snp_callset_filename   = GATK_MERGE_CALLSET(
+            callset = sample_snp_callset,
+            filename = merged_snp_callset_filename
+        )
         
-        #Generate two truthsets, one for snps and one for indels.
-        final_indel_truthset = self._generate_truthset(merged_indel_variants, 
-            final_indel_truthset_filename, training_type, **kwargs)
+        # Generate two truthsets, one for snps and one for indels.
+        final_indel_truthset_filename = self._generate_truthset(
+            input_vcf = merged_indel_callset_filename,
+            output_vcf = final_indel_truthset_filename,
+            training_type = training_type,
+            **kwargs
+        )
 
-        final_snp_truthset   = self._generate_truthset(merged_snp_filanem, 
-            final_snp_truthset_filename,   training_type, **kwargs)
+        final_snp_truthset_filename = self._generate_truthset(
+            input_vcf = merged_snp_callset_filename,
+            output_vcf = final_snp_truthset_filename,
+            training_type = training_type,
+            **kwargs
+        )
 
         result = {
             'patientId':      sample['PatientID'],
@@ -486,7 +547,7 @@ class Truthset:
                     * 'vaf': The variant allele frequency.
         """
         response = dict()
-        #record = record.samples
+
         for sample in record.samples:
             sample_fields = sample.data._asdict()
             if caller is None:
@@ -497,8 +558,7 @@ class Truthset:
                 else:                               caller = 'strelka'
             else:
                 caller = caller.lower()
-            #print(caller)
-            #pprint(sample_fields)
+
             if caller == 'somaticsniper':
                 
                 sample_reads = sum(sample_fields['DP4'])
@@ -506,8 +566,8 @@ class Truthset:
                 sample_vaf = sample_alleles / sample_reads
 
             elif caller == 'mutect':
-                #print(sample)
-                sample_reads = sample_fields['ALT_F1R2'] + sample_fields['ALT_F2R1'] + sample_fields['REF_F1R2'] + sample_fields['REF_F2R1']
+                sample_reads =  sample_fields['ALT_F1R2'] + sample_fields['ALT_F2R1']
+                sample_reads += sample_fields['REF_F1R2'] + sample_fields['REF_F2R1']
                 sample_alleles = sample_fields['ALT_F1R2'] + sample_fields['ALT_F2R1']
                 sample_vaf = sample_fields['AF']
 
@@ -530,7 +590,8 @@ class Truthset:
                 sample_alleles = sample_fields['AD']
                 sample_vaf = float(sample_fields['FREQ'].strip('%')) / 100
             else:
-                print("WARNING (getSampleVAF): {0} is not a caller!".format(caller))
+                message = "WARNING (getSampleVAF): {0} is not a caller!".format(caller)
+                raise ValueError(message)
 
             result = {
                 'reads': sample_reads,
@@ -560,10 +621,6 @@ class Truthset:
                     
                     if isValid:
                         writer.write_record(record)
-                    #lif record.is_indel and isFirstIndel:
-                    #   writer.write_record(record)
-                    #   isFirstIndel = False
-        #reader = vcf.Reader(open(output_vcf, 'r'))
         return output_vcf
 
     def _getRecordValidationStatus(self, record, training_type, **kwargs):
@@ -579,15 +636,18 @@ class Truthset:
         if training_type == 'Intersection':
             recordStatus = self._from_intersection(record, **kwargs)
         elif training_type == 'RNA-seq':
-            #Assume the record is from the vcf from the RNA-seq pipeline.
-            #Assume all RNA-seq variants are true variants.
+            # Assume the record is from the vcf from the RNA-seq pipeline.
+            # Assume all RNA-seq variants are true variants.
             recordStatus = self._from_RNA(record)
         elif training_type == 'VAF':
             recordStatus = self._from_VAF(record)
+        else:
+            message = "The training type is not supported: '{}'".format(training_type)
+            raise ValueError(message)
 
         return recordStatus
 
-    def _combineTruthsets(self, samples, options):
+    def _combineTruthsets(self, samples):
         """ Combines the truthsets of several samples into a single file.
             Parameters
             ----------
@@ -595,77 +655,79 @@ class Truthset:
                     A list of outputs from self._per_sample()
                         * 'filename-indel'
                         * 'filename-snv'
+            Example Picard Command
+            java -jar picard.jar SortVcf \
+                I=vcf_1.vcf \
+                I=vcf_2.vcf \
+                O=sorted.vcf
         """
-
+        truthset_folder = getPipelineFolder('truthset')
         sampleIds = sorted(i['PatientID'] for i in samples)
-        sampleIds = [i.split('-')[-1] for i in sampleIds] #Extracts patient id from the barcode. ex. TCGA-2H-A9GF -> A9GF
+        # Extracts patient id from the barcode. ex. TCGA-2H-A9GF -> A9GF
+        sampleIds = [i.split('-')[-1] for i in sampleIds]
         sampleIds = ",".join(sampleIds)
-        _folderName = lambda s: os.path.join(self.truthset_folder, s.format(sampleIds, self.training_type))
 
-        filename       = _folderName("{0}.{1}.merged_truthset.vcf")
-        indel_filename = _folderName("{0}.{1}.merged_truthset.indel.vcf")
-        snv_filename   = _folderName("{0}.{1}.merged_truthset.snv.vcf")
+        indel_truthset_filename = os.path.join(
+            truthset_folder, "{}.{}.merged.indel.truthset.vcf".format(
+                sampleIds,
+                training_type
+            )
+        )
+        snp_truthset_filename = os.path.join(
+            truthset_folder, "{}.{}.merged.snp.truthset.vcf".format(
+                sampleIds,
+                training_type
+            )
+        )
 
-        snv_variants   = "--variant " + " --variant ".join(i['filename-snv'] for i in samples) + ' \\'
-        indel_variants = "--variant " + " --variant ".join([i['filename-indel'] for i in samples]) + '\\'
-        snv_variants   = " ".join(["I={0}".format(i['filename-snv']) for i in samples])
-        indel_variants   = " ".join(["I={0}".format(i['filename-indel']) for i in samples])
-        
-        gatk_base_command = """ java -cp {program} org.broadinstitute.gatk.tools.CatVariants \
-                    -R {reference} \
-                    {variants}
-                    -out {output}"""
+        # Generate a command-line to parse the files.
+        # snp_cmd_string   = "--variant " + " --variant ".join([i['filename-snv']   for i in samples]) + '\\'
+        # indel_cmd_string = "--variant " + " --variant ".join([i['filename-indel'] for i in samples]) + '\\'
+        snp_cmd_string   = " ".join(["I={}".format(i['filename-snv'])   for i in samples])
+        indel_cmd_string = " ".join(["I={}".format(i['filename-indel']) for i in samples])
         
         picard_base_command = """java -jar {program} SortVcf {variants} O={output}"""
         snv_command = picard_base_command.format(
             program     = self.picard_program,
             reference   = self.reference,
-            variants    = snv_variants,
-            output      = snv_filename)
+            variants    = indel_cmd_string,
+            output      = indel_truthset_filename)
 
         indel_command = picard_base_command.format(
             program     = self.picard_program,
             reference   = self.reference,
-            variants    = indel_variants,
-            output      = indel_filename)
+            variants    = snp_cmd_string,
+            output      = snp_truthset_filename)
 
-        if not os.path.exists(snv_filename):
-            systemtools.Terminal(snv_command)
-        if not os.path.exists(indel_filename):
-            systemtools.Terminal(indel_command)
+        systemtools.Terminal(snv_command,   show_output = True)
+        systemtools.Terminal(indel_command, show_output = True)
+
         result = {
             'PatientID': sampleIds,
-            'filename': filename,
-            'filename-indel': indel_filename,
-            'filename-snv': snv_filename
+            'filename-indel': indel_truthset_filename,
+            'filename-snv': snp_truthset_filename
         }
 
         return result
-    
-    def _from_intersection(self, record, **kwargs):
+
+    @staticmethod
+    def _from_intersection(record, **kwargs):
         if '-' in record.INFO['set']:
             _separator = '-'
         else: _separator = '_'
 
-        #GATK includes callers that filtered the variant, designated by a "filterIn{caller}" label.
+        # GATK includes callers that filtered the variant, designated by a "filterIn{caller}" label.
         callset = [i for i in record.INFO['set'].split(_separator) if 'filter' not in i.lower()]
 
-        #MuSE and Somaticsniper are snp-only, and should not be counted in the intersection of indel callsets
+        # MuSE and Somaticsniper are snp-only, and should not be counted in the intersection of indel callsets
         if record.is_indel:
             num_callers_in_intersection = kwargs.get('indel_intersection')
-            #num_callers_in_intersection = kwargs['indel_intersection']
         else:
             num_callers_in_intersection = kwargs.get('snp_intersection')
-            #num_callers_in_intersection = kwargs['snv_intersection']
-
 
         _is_intersection = len(callset) == 1 and callset[0] == 'Intersection'
         _is_in_n_sets = int(len(callset) >= num_callers_in_intersection)
         validation_status = int(_is_intersection or _is_in_n_sets)
-        
-        #if _is_intersection: validation_status = 5
-        #else: validation_status = len(callset)
-
 
         row = {
             'chrom': record.CHROM,
@@ -682,7 +744,7 @@ class Truthset:
             'chrom': record.CHROM,
             'position': record.POS,
             'validation method': 'RNA-seq',
-            'validation status': int(filterOut == False)
+            'validation status': 0 if filterOut is False else 1
         }
         return row
 
@@ -691,19 +753,20 @@ class Truthset:
         normal_vaf = sample_vaf['NORMAL']['vaf']
         tumor_vaf = sample_vaf['TUMOR']['vaf']
 
-
-        #Filter out variants that were rejected by a caller
-        #This is only needed for variants in the callsets of a single caller
-        #filter_out = self._filterOut(record, caller)
+        # Filter out variants that were rejected by a caller
+        # This is only needed for variants in the callsets of a single caller
         filter_out = False
-        #Validate variants according to VAF status.
-        #This is only for testing purposes, a better version should be used later.
-        _somatic_vaf = (tumor_vaf >= self.min_tumor_vaf and normal_vaf < self.max_normal_vaf) or (tumor_vaf < self.min_tumor_vaf and normal_vaf == 0.0)
+        # Validate variants according to VAF status.
+        # This is only for testing purposes, a better version should be used later.
+        high_tumor_vaf  = tumor_vaf  >= self.min_tumor_vaf
+        high_normal_vaf = normal_vaf >= self.max_normal_vaf
+        _somatic_vaf = (high_tumor_vaf and not high_normal_vaf)
+        _somatic_vaf = _somatic_vaf or (not high_tumor_vaf and normal_vaf == 0.0)
         if _somatic_vaf and not filter_out:
-            validation_status = 1 #Somatic
-        elif (tumor_vaf < self.min_tumor_vaf and (normal_vaf > 0.0 and normal_vaf < self.max_normal_vaf)) or filter_out:
-            validation_status = 0 #Non-Somatic
-        else: validation_status = 2 #'Unknown'
+            validation_status = 1  # Somatic
+        elif (not high_tumor_vaf and (normal_vaf > 0.0 and not high_normal_vaf)) or filter_out:
+            validation_status = 0  # Non-Somatic
+        else: validation_status = 2  #  'Unknown'
 
         validation_status = int(validation_status == 1)
 
@@ -717,20 +780,21 @@ class Truthset:
     
     def export(self):
         result = {
-            'indel': self.indel_truthset,
-            'snp': self.snp_truthset
+            'indel': self.indel_filename,
+            'snp':   self.snp_filename
         }
+        return result
+
 
 class VCFtoMAF:
-    def __init__(self, sample, input_vcf, options, truthset = None):
+    def __init__(self, sample, input_vcf, options):
         """ Converts a VCF file to and annotated MAF file. Include additional fields such as VAF.
             Parameters
             ----------
                 sample:
                 input_vcf: string, dict<string:string>
                     The vcf file to convert.
-                options:
-                truthset:
+                options: dict<>
             Additional Columns
             ------------------
                 VAF: The variant allele frequency
@@ -763,21 +827,15 @@ class VCFtoMAF:
             "ExAC_AC_AN_EAS", "ExAC_AC_AN_FIN", "ExAC_AC_AN_NFE", "ExAC_AC_AN_OTH", "ExAC_AC_AN_SAS", "ExAC_FILTER"
         ]
 
-        self.output_folder = options['Pipeline Options']['maf folder']
+        output_folder = getPipelineFolder('vcftomaf')
         raw_maf = os.path.join(output_folder, "{0}.raw.maf".format(sample['PatientID']))
         self.maf = os.path.join(output_folder, "{0}.maf".format(sample['PatientID']))
         maf_file = self.vcftomaf(sample, input_vcf, raw_maf)
-        #maf_file = self.modifyMAF(sample, options, maf_file, truthset)
-
-        print("Output MAF: ", self.final_maf)
-
-
-        #file1.write("#version 2.4\n")
-        #writeTSV(maf_file, output_filename, self.maf_fieldnames)
-        #self.filename = output_filename
+        print(maf_file)
+        print("Output MAF: ", self.maf)
 
     @staticmethod
-    def modifyMAF(sample, options, input_maf, truthset):
+    def modifyMAF(sample, input_maf, truthset):
         """ Adds relevant information to the maf files
             Additional Columns
             ------------------
@@ -820,9 +878,10 @@ class VCFtoMAF:
                 row['Matched_Norm_Sample_Barcode']  = sample['NormalID']
                 row['tumor_bam_uuid']               = sample['SampleUUID']
                 row['normal_bam_uuid']              = sample['NormalUUID']
-                #row['Callset']                         = 'MuSE'
-                #pprint(row)
-                validation_status = truthset(sample = sample['SampleID'], chrom = row['Chromosome'], pos = row['Start_Position'])           
+                validation_status = truthset(
+                    sample = sample['SampleID'],
+                    chrom = row['Chromosome'],
+                    pos = row['Start_Position'])
 
                 row['Validation_Status_VAF']        = validation_status.get('VAF')
                 row['Validation_Status_RNA']        = validation_status.get('RNA-seq')
@@ -834,8 +893,7 @@ class VCFtoMAF:
 
         return output_maf
 
-    @staticmethod
-    def vcftomaf(sample, input_vcf, output_maf):
+    def vcftomaf(self, sample, input_vcf, output_maf):
         """
          --input-vcf      Path to input file in VCF format
          --output-maf     Path to output MAF file [Default: STDOUT]
@@ -865,7 +923,6 @@ class VCFtoMAF:
 
         """
         print("Converting VCF to MAF...", flush = True)
-        #perl vcf2maf.pl --input-vcf tests/test.vcf --output-maf tests/test.vep.maf --tumor-id WD1309 --normal-id NB1308
 
         command = """perl {script} \
             --input-vcf {vcf} \
@@ -886,12 +943,12 @@ class VCFtoMAF:
                 normal      = sample['NormalID'],
                 vcf         = input_vcf,
                 maf         = output_maf)
-        #print(command)
         if not os.path.isfile(output_maf):
             systemtools.Terminal(command)
 
         return output_maf
 
+    @staticmethod
     def filterMAF(sample, options, input_maf, caller):
         """
             Filter Criteria
@@ -902,7 +959,7 @@ class VCFtoMAF:
                 PON Filtering
                 
         """
-        return row
+        pass
 
 
 class SomaticSeqPipeline:
@@ -953,19 +1010,12 @@ class SomaticSeqPipeline:
         filetools.checkDir(self.training_folder)
         filetools.checkDir(self.prediction_folder)
 
-
-        #Generate separate tables for each training sample.
-        if   self.training_type == 'Intersection': file_type = 'DNA-seq'
-        elif self.training_type == 'RNA-seq':      file_type = 'RNA-seq'
-
         self.trainers = list()
         for training_sample in training_samples:
             patientId = training_sample['PatientID']
-            #sample_variants = getSampleCallset(patientId, 'original')
-            trainer = self._runTrainer(patientId)#, sample_variants)
+            trainer = self._runTrainer(patientId)
             self.trainers.append(trainer)
 
-        #self.ensemble_tables = self._combineTrainers(self.trainers)
         self.ensemble_tables = self._combineTables(self.trainers)
         self.trainer = self._runManualClassifier(
             self.ensemble_tables['indelTable'], 
@@ -974,29 +1024,25 @@ class SomaticSeqPipeline:
         #Run the prediction model on the prediction variants.
         self.predictions = list()
         for prediction_sample in prediction_samples:
-            #sample_variants = GetVariantList(prediction_sample)
-            prediction = self._runPredictor(prediction_sample, trainer)
+            prediction = self._runPredictor(prediction_sample, self.trainer)
             self.predictions.append(prediction)
 
-
-    def _runTrainer(self, patientId):
+    def _runTrainer(self, sample):
         """
             Parameters
             ----------
                 sample: dict<>
-                    The sample's row from the sample list. Contains information related to the genome files.
-                variants: dict<>
-                    Each callset generated for the sample.
-                truthset: Truthset
-                    The truthset for the analysis. Should have both SNV and Indel values.
+                    Required to find the patient's BAM files.
             Outputs
             -------
                 [somaticseq output folder]/training-[training type]/[barcode]/[files]
         """
-        callset = getSampleCallset('original')
-        output_folder = os.path.join(self.training_folder, 'tables', patientId)
-        filetools.checkDir(output_folder, True)
-        #           --ada-r-script {ada} \
+        patientId = sample['PatientID']
+        callset = getSampleCallset(patientId, 'original')
+        training_folder = getPipelineFolder('somaticseq-training')
+        trainer_output_folder = os.path.join(training_folder, 'tables', patientId)
+        filetools.checkDir(trainer_output_folder, True)
+
         command = """{somaticseq} \
             --mutect2 {mutect} \
             --varscan-snv {varscan_snv} \
@@ -1015,7 +1061,7 @@ class SomaticSeqPipeline:
             --truth-snv {truthset_snp} \
             --truth-indel {truthset_indel} \
             --output-dir {output_folder}""".format(
-                somaticseq      = self.somaticseq_wrapper,
+                somaticseq      = self.somaticseq_program,
                 gatk            = self.gatk_program,
                 ada             = self.ada_builder_script,
 
@@ -1036,20 +1082,20 @@ class SomaticSeqPipeline:
                 
                 truthset_indel  = self.truthset['indel'],
                 truthset_snp    = self.truthset['snp'],
-                output_folder   = output_folder)
+                output_folder   = trainer_output_folder)
 
         expected_output = {
-            'indelTable':      os.path.join(output_folder, "Ensemble.sINDEL.tsv"),
-            'snvTable':        os.path.join(ouput_folder,  "Ensemble.sSNV.tsv"),
-            'indelClassifier': os.path.join(output_folder, "Ensemble.sINDEL.tsv.Classifier.RData"),
-            'snpClassifier':   os.path.join(ouput_folder,  "Ensemble.sSNV.tsv.Classifier.RData")
+            'indelTable':      os.path.join(trainer_output_folder, "Ensemble.sINDEL.tsv"),
+            'snvTable':        os.path.join(trainer_output_folder, "Ensemble.sSNV.tsv"),
+            'indelClassifier': os.path.join(trainer_output_folder, "Ensemble.sINDEL.tsv.Classifier.RData"),
+            'snpClassifier':   os.path.join(trainer_output_folder, "Ensemble.sSNV.tsv.Classifier.RData")
         }
         if any([not os.path.exists(fn) for fn in expected_output.values()]):
             systemtools.Terminal(command, show_output = True)
         expected_output['PatientID'] = sample['PatientID']
         return expected_output
 
-    def _TsvToVcf(self, filename):
+    def _TsvToVcf(self, vcf_filename):
         """ Converts a SomaticSeq TSV file to a VCF file in the same folder.
         """
         output_file = os.path.splitext(vcf_filename)[0] + '.vcf'
@@ -1057,12 +1103,11 @@ class SomaticSeqPipeline:
         command = """{script} -tsv {table} -vcf {output} -pass 0.7 -low 0.1 -tools {tools} -phred"""
         command = command.format(
             script = self.tsv_to_vcf_script,
-            table = filename,
+            table = vcf_filename,
             output = output_file,
             tools = "")
 
-        if not os.path.exists(output_file):
-            systemtools.Terminal(command)
+        systemtools.Terminal(command, show_output = True)
 
         return output_file
 
@@ -1073,24 +1118,32 @@ class SomaticSeqPipeline:
         filetools.checkDir(output_folder)
         training_ids = sorted(i['PatientID'] for i in tables)
         training_ids_string = ','.join([i.split('-')[2] for i in training_ids])
-        indel_table_filename = os.path.join(output_folder, "Ensemble.sINDEL.combined.{0}.tsv".format(  training_ids_string))
-        snp_table_filename   = os.path.join(output_folder, "Ensemble.sSNV.combined.tsv.{0}.tsv".format(training_ids_string))
+        indel_table_filename = os.path.join(
+            output_folder, "Ensemble.sINDEL.combined.{0}.tsv".format(training_ids_string)
+        )
+        snp_table_filename   = os.path.join(
+            output_folder, "Ensemble.sSNV.combined.tsv.{0}.tsv".format(training_ids_string)
+        )
 
-        indel_table = list()
-        snp_table = list()
-        #pprint(tables)
-        for filename in [i['indelTable'] for i in tables]:
-            table, indel_fieldnames = tabletools.readCSV(filename, True)
-            indel_table += table
-        for filename in [i['snpTable'] for i in tables]:
-            table, snv_fieldnames = tabletools.readCSV(filename, True)
-            snv_tables += table
+        indel_tables = list()
+        snp_tables = list()
+        if len(tables) > 0:
+            for filename in [i['indelTable'] for i in tables]:
+                indel_table, indel_fieldnames = tabletools.readCSV(filename, True)
+                indel_tables += indel_table
 
-        tabletools.writeCSV(indel_table, indel_table_filename, fieldnames = indel_fieldnames)
-        tabletools.writeCSV(snv_table,     snp_table_filename, fieldnames = snp_fieldnames)
+            for filename in [i['snpTable'] for i in tables]:
+                snp_table, snp_fieldnames = tabletools.readCSV(filename, True)
+                snp_tables += snp_table
+        else:
+            message = "In _combineTables(), not tables were provided."
+            raise ValueError(message)
+
+        tabletools.writeCSV(indel_tables, indel_table_filename, fieldnames = indel_fieldnames)
+        tabletools.writeCSV(snp_tables,     snp_table_filename, fieldnames = snp_fieldnames)
 
         output = {
-            'snpTable': snv_table_filename,
+            'snpTable': snp_table_filename,
             'indelTable': indel_table_filename
         }
         return output
@@ -1124,7 +1177,7 @@ class SomaticSeqPipeline:
         tumor     = sample['TumorBAM']
         output_folder = os.path.join(self.prediction_folder, patientId)
 
-        callset = getSampleCallset('original')
+        callset = getSampleCallset(patientId, 'original')
 
         command = """{somaticseq} \
             --mutect2 {mutect} \
@@ -1172,23 +1225,24 @@ class SomaticSeqPipeline:
                 output_folder    = self.prediction_folder)
         indel_table = os.path.join(output_folder, "Ensemble.sINDEL.tsv")
         snp_table   = os.path.join(output_folder, "Ensemble.sSNV.tsv")
-        if not os.path.exists(indelTable) or not os.path.exists(snvTable):
+        if not os.path.exists(indel_table) or not os.path.exists(snp_table):
             systemtools.Terminal(command, show_output = True)
 
-        indel_vcf = self.TsvToVcf(indelTable)
-        snv_vcf   = self.TsvToVcf(snvTable)
+        indel_vcf = self._TsvToVcf(indel_table)
+        snp_vcf   = self._TsvToVcf(snp_table)
 
         expected_output = {
             'PatientID':  patientId,
             'indelTable': indel_table,
-            'snvTable':   snv_table,
+            'snvTable':   snp_table,
             'indelVCF':   indel_vcf,
-            'snvVCF':     snv_vcf,
+            'snpVCF':     snp_vcf,
             'indelClassifer': os.path.join(output_folder),
             'snvClassifier':  os.path.join(output_folder)
         }
 
         return expected_output
+
 
 class FilterVCF:
     """
@@ -1241,19 +1295,19 @@ class FilterVCF:
         result = {
             'numPassedRecords': num_passed_records,
             'numRejectedRecords': num_rejected_records,
-            'passedVCF': passedOutput,
-            'rejectedVCF': rejectedOutput
         }
 
         return result
-    def writeVCF(self, records, filename, reader):
+
+    @staticmethod
+    def writeVCF(records, filename, reader):
         with open(filename, 'w') as file1:
             writer = vcf.Writer(file1, reader)
             for record in records:
                 writer.write_record(record)
         return filename
 
-    def _getFilterStatus(self, record, record_type):
+    def _getFilterStatus(self, record):
         """
             a. filter variants present in dbSNP, 1000 genomes project, etc.
             b. filter out known indels.
@@ -1267,22 +1321,29 @@ class FilterVCF:
         known_indel_status = self._filterKnownIndels(record)
         base_quality_status= self._filterBaseQuality(record)
 
-
+        filter_status = dbSNP_status or known_indel_status
+        filter_status = filter_status or base_quality_status
+        return filter_status
 
     def _filterFromdbSNP(self, record):
-        pass
+        message = "_filterFromdbSNP is not implemented."
+        raise NotImplementedError(message)
 
     def _filterKnownIndels(self, record):
-        pass
+        message = "_filterKnownIndels is not implemented."
+        raise NotImplementedError(message)
 
     def _filterBaseQuality(self, record):
-        pass
+        message = "_filterBasequality is not implemented."
+        raise NotImplementedError(message)
 
     def _filterConsequence(self, record):
-        pass
+        message = "_filterConsequence is not implemented."
+        raise NotImplementedError(message)
 
     def _filterGermlineVariants(self, record):
-        pass
+        message = "_filterGermlineVariants is not implemented."
+        raise NotImplementedError(message)
 
 
 class Pipeline:
@@ -1350,15 +1411,12 @@ class Pipeline:
             print("prediction samples: ")
             for element in prediction_samples:
                 print("\t", element['PatientID'])
-
-        #all_samples = training_samples + prediction_samples
         
         ##################### Pre-process the callsets of the training samples. ####################
         for sample in training_samples:
             #### Fix the files that will be used to generate the truthset (the training samples) ###
             original_callset     = getSampleCallset(sample['PatientID'], 'original')
             fixed_callset_folder = getCallsetFolder('original-fixed')
-            #split_callset_folder = getCallsetFolder('original-fixed-split')
 
             somaticseq_folder = options['Programs']['SomaticSeq']
             fixed_callset = vcftools.fixCallerOutputs(original_callset, somaticseq_folder)
@@ -1366,38 +1424,38 @@ class Pipeline:
             split_callset_output_folder = getCallsetFolder('original-fixed-split')
             split_callset = vcftools.splitCallset(fixed_callset, split_callset_output_folder)
 
-
-        #Generate a truthset using the training samples. Separate indel/snp truthsets will be generated.
-        truthset    = Truthset(training_samples, options, training_type = training_type, **kwargs)
+        # Generate a truthset using the training samples. Separate indel/snp truthsets will be generated.
+        truthset    = Truthset(training_samples, options, truthset_type= training_type, **kwargs)
 
         somaticseq  = SomaticSeqPipeline(training_samples, prediction_samples, options, truthset = truthset)
-        predictions = somaticseq.predictions #list of dictionaries with the output filenames for a given sample.
-        
 
-        #Filter
+        # list of dictionaries with the output filenames for a given sample.
+        predictions = somaticseq.predictions
+
+        # Filter
         filtered_samples = list()
         for sample_vcfs in predictions:
-            sample = [i for i in prediction_samples if i['PatientID'] == sample_vcfs['PatientID']][0]
-            indel_vcf = sample_vcfs['indelVCF']
-            snv_vcf   = sample_vcfs['snvVCF']
-            sample_vcfs['indelFilteredVCF'] = FilterVCFs(indel_vcf, options).output
-            sample_vcfs['snvFilteredVCF']   = FilterVCFs(snv_vcf, options).output
+            sample_vcf = [i for i in prediction_samples if i['PatientID'] == sample_vcfs['PatientID']][0]
+            indel_vcf = sample_vcf['indelVCF']
+            snv_vcf   = sample_vcf['snpVCF']
+            sample_vcf['indelFilteredVCF'] = FilterVCF(indel_vcf, options).output
+            sample_vcf['snvFilteredVCF']   = FilterVCF(snv_vcf, options).output
 
             filtered_samples.append(sample_vcfs)
         
-        #Annotate and convert to MAF
+        # Annotate and convert to MAF
         maf_samples = list()
         for filtered_sample in filtered_samples:
             sample = [i for i in prediction_samples if i['PatientID'] == filtered_sample['PatientID']]
             indel_vcf = filtered_sample['indelFilteredVCF']
             snv_vcf = filtered_sample['snvFilteredVCF']
-            indel_maf = VCFtoMAF(sample, indel_vcf, optionss)
+            indel_maf = VCFtoMAF(sample, indel_vcf, options)
             snv_maf = VCFtoMAF(sample, snv_vcf, options)
             filtered_sample['indelMAF'] = indel_maf
             filtered_sample['snvMAF'] = snv_maf
             maf_samples.append(filtered_sample)
         
-        #Combine MAFs
+        # Combine MAFs
 
 
 """
@@ -1415,44 +1473,16 @@ GATK_MERGE_CALLSET = GATKMergeSampleCallsets(options)
 ###################################################################################################
 ###################################### Run the Pipeline ##########################################
 ###################################################################################################
-def test1():
-    caller_classifier = callertools.CallerOutputClassifier()
-    documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
-    full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
-
-    full_sample_list = tabletools.readCSV(full_sample_list_filename)
-
-    for sample in full_sample_list:
-        output_folder = "/home/upmc/Documents/debug_folder/"
-        patient_folder = getPatientFolder(sample['PatientID'])
-        patient_variants = caller_classifier(patient_folder, exclude = ['strelka', 'chromosome'], logic = 'and')
-        patient_variants = {k:v[0] for k, v in patient_variants.items()}
-
-        new_variants = vcftools.fixRawCallerOutputs(sample, patient_variants, output_folder, options['Programs']['SomaticSeq'])
-        for caller, source in sorted(patient_variants.items()):
-            destination     = new_variants[caller]
-            print(caller)
-            source_md5      = filetools.generateFileMd5(source)
-            destination_md5 = filetools.generateFileMd5(destination)
-            
-            print("\tSource:      {}\t{}".format(source_md5, source))
-            print("\tDestination: {}\t{}".format(destination_md5, destination))
 
 if __name__ == "__main__" and True:
-
-
     documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
     full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
 
     full_sample_list = tabletools.readCSV(full_sample_list_filename)
 
-
-
-    #pprint(full_sample_list)
     training_type = 'Intersection'
-    #training_sample_ids = ['TCGA-2H-A9GF', 'TCGA-2H-A9GO']
     training_sample_ids = ['TCGA-2H-A9GR']
 
     training_samples    = [i for i in full_sample_list if i['PatientID'] in training_sample_ids]
@@ -1471,8 +1501,6 @@ elif False:
         'TumorBAM':   "/home/upmc/Documents/genome_files/2d1700f2-0f9b-4af6-a59b-4e6a51e01368/3e683408778f2ebe86f6c1f9ff936b0b_gdc_realn.bam",
         'ExomeTargets': "/home/upmc/Documents/Reference/SeqCap_EZ_Exome_v3_capture.hg38_GDC_official.bed"
     }
-    #GATKCombineVariants(sample, options, variants, output_folder):
-    output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder/"
-    CombineCallset(sample, options, output_folder)
+    print(sample)
 elif True:
     test1()
