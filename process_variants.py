@@ -68,7 +68,7 @@ def getCallsetFolder(patientid, kind = 'original'):
 	elif kind == 'merged':
 		subfolder = 'merged_callset'
 
-	patient_folder = os.path.join(PIPELINE_FOLDER, callset_folder, patientId, subfolder)
+	patient_folder = os.path.join(PIPELINE_FOLDER, callset_folder, patientid, subfolder)
 	return patient_folder
 
 def getPipelineFolder(step):
@@ -94,7 +94,7 @@ def getPipelineFolder(step):
 		elif step == 'truthset-files':
 			pipeline_folder = os.path.join(PIPELINE_FOLDER, 'truthset', kwargs['patientId'])
 	elif 'somaticseq' in step:
-			if step == 'somaticseq':
+		if step == 'somaticseq':
 			pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq')
 		elif step == 'somaticseq-training':
 			pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq', 'training')
@@ -107,10 +107,12 @@ def getPipelineFolder(step):
 	return pipeline_folder
 
 def getSampleCallset(patientid, kind):
+	if isinstance(patientid, dict):
+		patientid = patientid['PatientID']
 	_exclusion_terms = ['strelka', 'chromosome'] #Terms to determine which folders to skip when searching for variant files.
 
 	callset_folder = getCallsetFolder(patientid, kind = kind)
-	sample_variants = GET_CALLSET(patient_folder, exclude = _exclusion_terms, logic = 'and')
+	sample_variants = GET_CALLSET(callset_folder, exclude = _exclusion_terms, logic = 'and')
 
 	return sample_variants
 
@@ -437,7 +439,7 @@ class Truthset:
 		patientId = sample['PatientID']
 		################################# Define Filenames ########################################
 		final_indel_truthset_filename = os.path.join(
-			getTruthsetFolder(patientId)
+			getTruthsetFolder(patientId),
 			"{}.{}.indel.truthset.vcf".format(patientId, training_type))
 
 		final_snp_truthset_filename = os.path.join(
@@ -1032,7 +1034,7 @@ class SomaticSeqPipeline:
 				varscan_snv   	= callset['varscan-snv'],
 				varscan_indel 	= callset['varscan-indel'],
 				
-				truthset_snp 	= self.truthset['indel'],
+				truthset_indel 	= self.truthset['indel'],
 				truthset_snp 	= self.truthset['snp'],
 				output_folder 	= output_folder)
 
@@ -1354,7 +1356,7 @@ class Pipeline:
 		##################### Pre-process the callsets of the training samples. ####################
 		for sample in training_samples:
 			#### Fix the files that will be used to generate the truthset (the training samples) ###
-			original_callset     = getCallsetfolder('original')
+			original_callset     = getSampleCallset(sample['PatientID'], 'original')
 			fixed_callset_folder = getCallsetFolder('original-fixed')
 			#split_callset_folder = getCallsetFolder('original-fixed-split')
 
@@ -1408,7 +1410,7 @@ options = configparser.ConfigParser()
 options.read(OPTIONS_FILENAME)
 
 GET_CALLSET = callertools.CallerOutputClassifier(reduce = True, verbose = True)
-GATK_MERGE_CALLSET = GatKMergeSampleCallsets(options)
+GATK_MERGE_CALLSET = GATKMergeSampleCallsets(options)
 
 ###################################################################################################
 ###################################### Run the Pipeline ##########################################
