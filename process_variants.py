@@ -123,7 +123,7 @@ def getPipelineFolder(step, **kwargs):
         raise KeyError(message)
     else:
         pipeline_folder = _concatPaths(folder_names)
-
+       filetools.checkDir(pipeline_folder, True)
     return pipeline_folder
 
 
