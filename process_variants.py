@@ -72,6 +72,14 @@ def getCallsetFolder(patientid, kind = 'original'):
     return patient_folder
 
 
+def _concatPaths(*paths):
+    if isinstance(paths[0], (tuple, list)):
+        paths = paths[0]
+    paths = [i for i in paths if i]
+    path = os.path.join(PIPELINE_FOLDER, *paths)
+    return path
+
+
 def getPipelineFolder(step, **kwargs):
     """ Retrieves the path to a folder reserved for a specific
         step in the pipeline.
@@ -87,32 +95,34 @@ def getPipelineFolder(step, **kwargs):
                     [training_type]
             vcftomaf
     """
-    if 'callsets' in step:
-        pipeline_folder = os.path.join(PIPELINE_FOLDER, "1_callsets")
-    elif 'truthset' in step:
-        if step == 'truthset':
-            pipeline_folder = os.path.join(PIPELINE_FOLDER, 'truthset')
-        elif step == 'truthset-files':
-            pipeline_folder = os.path.join(PIPELINE_FOLDER, 'truthset', kwargs['patientId'])
-        else:
-            pipeline_folder = None
-    elif 'somaticseq' in step:
-        if step == 'somaticseq':
-            pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq')
-        elif step == 'somaticseq-training':
-            pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq', 'training')
-        elif step == 'somaticseq-prediction':
-            pipeline_folder = os.path.join(PIPELINE_FOLDER, 'somaticseq', 'prediction')
-        else:
-            pipeline_folder = None
-    elif 'maf' in step:
-        pipeline_folder = os.path.join(PIPELINE_FOLDER, 'vcftomaf')
-    else:
-        pipeline_folder = None
 
-    if pipeline_folder is None:
+    if 'callsets' in step:
+        folder_names = ("1_callsets")
+    elif step == 'truthset':
+        folder_names = ('truthset')
+    elif step == 'truthset-files':
+        if 'patientId' not in kwargs or 'sample' not in kwargs:
+            message = "Pipeline step '{}' requires on of ('patientId' or 'sample')".format(step)
+            raise ValueError(message)
+        if 'sample' in kwargs: patientId = sample['PatientID']
+        else: patientId = kwargs['patientId']
+        folder_names = ('truthset', 'files', patientId)
+    elif step == 'somaticseq':
+        folder_names = ('somaticseq')
+    elif step == 'somaticseq-training':
+        folder_names = ('somaticseq', 'training', kwargs.get('kind'))
+    elif step == 'somaticseq-prediction':
+        folder_names = ('somaticseq', 'prediction', kwargs.get('kind'))
+    elif 'maf' in step:
+        folder_names = ('vcftomaf')
+    else:
+        folder_names = None
+
+    if folder_names is None:
         message = "The indicated pipeline step is not defined: " + step
         raise KeyError(message)
+    else:
+        pipeline_folder = _concatPaths(folder_names)
 
     return pipeline_folder
 
@@ -140,7 +150,15 @@ def getSampleCallset(patientid, callset_type, group = 'all'):
     sample_variants = GET_CALLSET(callset_folder, exclude = _exclusion_terms, logic = 'and')
 
     if group == 'all':
-        raise NotImplementedError()
+        pass
+    else:
+        if group not in {'indel', 'snp', 'snv'}:
+            message = "The provided callset group does not exist: " + group
+            raise ValueError(message)
+        elif 'split' not in step:
+            message = "The callset is not split into indels or snps: " + callset_type
+            raise ValueError(message)
+        sample_variants = {k.split('-')[0]: v for k, v in sample_variants.items() if group in k}
 
     return sample_variants
 
@@ -285,12 +303,12 @@ class GATKMergeSampleCallsets:
             with open(vcf_filename, 'r') as vcf_file:
                 reader = vcf.Reader(vcf_file)
                 if 'varscan' in caller:
-                    reader = self._modify_varscan_output(reader, output_file)
+                    reader = self._modify_varscan_output(reader)
                 output_variants[caller] = self._copy_vcf(reader, output_file)
 
         return output_variants
-
-    def _copy_vcf(self, reader, output_file):
+    @staticmethod
+    def _copy_vcf(reader, output_file):
         with open(output_file, 'w') as file1:
             writer = vcf.Writer(file1, reader)
             for record in reader:
@@ -319,12 +337,12 @@ class GATKMergeSampleCallsets:
                     If not provided, a generic callset will be created.
         """
         if isinstance(patientId, dict):
-            patient_id = patientId['PatientID']
+            patientId = patientId['PatientID']
 
         snp_variants   = callset('snp')
         indel_variants = callset('indel')
 
-        basename = "{}.merged_variants".format(patient_id)
+        basename = "{}.merged_variants".format(patientId)
         output_snp_filename   = os.path.join(output_folder, basename + '.snp.vcf')
         output_indel_filename = os.path.join(output_folder, basename + '.indel.vcf')
 
@@ -450,18 +468,18 @@ class Truthset:
     
         # Generate a separate truthset for each sample, then merge.
         for sample in samples:
-            sample_truthset = self._generateSampleTruthset(sample, truthset_type, **kwargs)
+            sample_truthset = self._generateSampleTruthset(sample, **kwargs)
             outputs.append(sample_truthset)
 
         if len(outputs) == 1:
             sample_truthset = outputs[0]
         else:
-            sample_truthset = self._combineTruthsets(outputs, truthset_options)
+            sample_truthset = self._combineTruthsets(outputs)
 
         self.indel_filename = sample_truthset['filename-indel']
         self.snp_filename   = sample_truthset['filename-snv']
 
-    def _generateSampleTruthset(self, sample, training_type, **kwargs):
+    def _generateSampleTruthset(self, sample, **kwargs):
         """ Generates individual truthsets per sample.
             Available Keyword Arguments
             ---------------------------
@@ -472,7 +490,6 @@ class Truthset:
         patientId = sample['PatientID']
         ################################# Define Filenames ########################################
         base_truthset_files_folder = getPipelineFolder('truthset-files', patientId = patientId)
-        filetools.checkDir(base_truthset_files_folder)
 
         final_indel_truthset_filename = os.path.join(
             base_truthset_files_folder,
@@ -514,14 +531,14 @@ class Truthset:
         final_indel_truthset_filename = self._generate_truthset(
             input_vcf = merged_indel_callset_filename,
             output_vcf = final_indel_truthset_filename,
-            training_type = training_type,
+            training_type = self.training_type,
             **kwargs
         )
 
         final_snp_truthset_filename = self._generate_truthset(
             input_vcf = merged_snp_callset_filename,
             output_vcf = final_snp_truthset_filename,
-            training_type = training_type,
+            training_type = self.training_type,
             **kwargs
         )
 
@@ -533,7 +550,7 @@ class Truthset:
         return result
 
     @staticmethod
-    def _getSampleVAF(record, caller = None):
+    def _getSampleVAF(record):
         """ Use DP4 instead of DP
             Parameters
             ----------
@@ -550,14 +567,13 @@ class Truthset:
 
         for sample in record.samples:
             sample_fields = sample.data._asdict()
-            if caller is None:
-                if 'DP4' in sample_fields:          caller = 'somaticsniper'
-                elif 'ALT_F1R2' in sample_fields:   caller = 'mutect'
-                elif 'FREQ' in sample_fields:       caller = 'varscan'
-                elif 'DP' in sample_fields:         caller = 'muse'
-                else:                               caller = 'strelka'
-            else:
-                caller = caller.lower()
+
+            if 'DP4' in sample_fields:          caller = 'somaticsniper'
+            elif 'ALT_F1R2' in sample_fields:   caller = 'mutect'
+            elif 'FREQ' in sample_fields:       caller = 'varscan'
+            elif 'DP' in sample_fields:         caller = 'muse'
+            else:                               caller = 'strelka'
+            caller = caller.lower()
 
             if caller == 'somaticsniper':
                 
@@ -602,7 +618,7 @@ class Truthset:
 
         return response
 
-    def _generate_truthset(self, input_vcf, output_vcf, training_type, **kwargs):
+    def _generate_truthset(self, input_vcf, output_vcf, **kwargs):
         """ Generates a truthset
             Parameters
             ----------
@@ -616,14 +632,14 @@ class Truthset:
                 writer = vcf.Writer(output_file, reader)
 
                 for index, record in enumerate(reader):
-                    recordStatus = self._getRecordValidationStatus(record, training_type, **kwargs)
+                    recordStatus = self._getRecordValidationStatus(record, **kwargs)
                     isValid = recordStatus['validation status']
                     
                     if isValid:
                         writer.write_record(record)
         return output_vcf
 
-    def _getRecordValidationStatus(self, record, training_type, **kwargs):
+    def _getRecordValidationStatus(self, record, **kwargs):
         """ Determines if a given record is within the truthset.
             Returns
             -------
@@ -642,7 +658,7 @@ class Truthset:
         elif training_type == 'VAF':
             recordStatus = self._from_VAF(record)
         else:
-            message = "The training type is not supported: '{}'".format(training_type)
+            message = "The training type is not supported: '{}'".format(self.training_type)
             raise ValueError(message)
 
         return recordStatus
@@ -748,8 +764,8 @@ class Truthset:
         }
         return row
 
-    def _from_VAF(self, record, caller):
-        sample_vaf = self._getSampleVAF(record, caller)
+    def _from_VAF(self, record):
+        sample_vaf = self._getSampleVAF(record)
         normal_vaf = sample_vaf['NORMAL']['vaf']
         tumor_vaf = sample_vaf['TUMOR']['vaf']
 
@@ -766,7 +782,7 @@ class Truthset:
             validation_status = 1  # Somatic
         elif (not high_tumor_vaf and (normal_vaf > 0.0 and not high_normal_vaf)) or filter_out:
             validation_status = 0  # Non-Somatic
-        else: validation_status = 2  #  'Unknown'
+        else: validation_status = 2  # 'Unknown'
 
         validation_status = int(validation_status == 1)
 
@@ -1005,8 +1021,8 @@ class SomaticSeqPipeline:
         self.training_type = truthset.training_type
         self.truthset = truthset.export()
 
-        self.training_folder   = os.path.join(getPipelineFolder('somaticseq-training'),   self.training_type)
-        self.prediction_folder = os.path.join(getPipelineFolder('somaticseq-prediction'), self.training_type)
+        self.training_folder   = getPipelineFolder('somaticseq-training', kind = self.training_type)
+        self.prediction_folder = getPipelineFolder('somaticseq-prediction', kind = self.training_type)
         filetools.checkDir(self.training_folder)
         filetools.checkDir(self.prediction_folder)
 
@@ -1416,10 +1432,10 @@ class Pipeline:
         for sample in training_samples:
             #### Fix the files that will be used to generate the truthset (the training samples) ###
             original_callset     = getSampleCallset(sample['PatientID'], 'original')
-            fixed_callset_folder = getCallsetFolder('original-fixed')
+            fixed_callset_folder = getCallsetFolder(sample['PatientID'], 'original-fixed')
 
             somaticseq_folder = options['Programs']['SomaticSeq']
-            fixed_callset = vcftools.fixCallerOutputs(original_callset, somaticseq_folder)
+            fixed_callset = vcftools.fixCallerOutputs(original_callset, fixed_callset_folder)
             ################### Separate the corrected files into indels and snps ##################
             split_callset_output_folder = getCallsetFolder('original-fixed-split')
             split_callset = vcftools.splitCallset(fixed_callset, split_callset_output_folder)
@@ -1433,6 +1449,7 @@ class Pipeline:
         predictions = somaticseq.predictions
 
         # Filter
+        """
         filtered_samples = list()
         for sample_vcfs in predictions:
             sample_vcf = [i for i in prediction_samples if i['PatientID'] == sample_vcfs['PatientID']][0]
@@ -1454,7 +1471,7 @@ class Pipeline:
             filtered_sample['indelMAF'] = indel_maf
             filtered_sample['snvMAF'] = snv_maf
             maf_samples.append(filtered_sample)
-        
+        """
         # Combine MAFs
 
 
@@ -1503,4 +1520,4 @@ elif False:
     }
     print(sample)
 elif True:
-    test1()
+    pass
