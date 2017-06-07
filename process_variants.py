@@ -10,7 +10,7 @@ from pprint import pprint
 # Required for somaticseq. import here to make sure they're installed.
 import scipy
 import pysam
-
+import logging
 """
 	1. Harmonize VCF fields
 	2. Merge caller VCFs
@@ -28,6 +28,20 @@ import pytools.filetools as filetools
 import pytools.tabletools as tabletools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
+
+def configurePipelineLogger():
+	import datetime
+	date = datetime.datetime.now().isoformat().split('T')[0]
+	logger_filename = os.path.join(os.getcwd(), date + 'log.txt')
+	pipeline_logger = logging.getLogger('callstack_logger')
+	hdlr = logging.FileHandler(logger_filename)
+	formatter = logging.Formatter('%(asctime)s %(levelname)s\t%(message)s')
+	hdlr.setFormatter(formatter)
+	pipeline_logger.addHandler(hdlr)
+	pipeline_logger.setLevel(logging.INFO)
+
+	return pipeline_logger
+LOGGER = configurePipelineLogger()
 
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
@@ -123,7 +137,12 @@ def getPipelineFolder(step, **kwargs):
 					[training_type]
 			vcftomaf
 	"""
-
+	LOGGER.info("getPipelineFolder()")
+	LOGGER.info("\tstep = ", step)
+	LOGGER.info("\tKeyword Arguments")
+	for k, v in kwargs.items():
+		LOGGER.info("\t{} = \t{}".format(k, v))
+		
 	if 'callsets' in step:
 		folder_names = ("1_callsets")
 	elif step == 'truthset':
@@ -163,6 +182,7 @@ def getPipelineFolder(step, **kwargs):
 	else:
 		pipeline_folder = _concatPaths(folder_names)
 	filetools.checkDir(pipeline_folder, True)
+	print("getPipelineFolder({})".format(step))
 	return pipeline_folder
 
 
@@ -227,7 +247,11 @@ class GATKMergeSampleCallsets:
 				output_folder:
 				variants:
 		"""
-
+		log_message = "GATKMergeSampleCallsets(merge_options = {})".format(merge_options)
+		LOGGER.info(log_message)
+		LOGGER.info('\tKeyword Arguements:')
+		for k, v in kwargs.items():
+			LOGGER.info("\t{}\t{}".format(k, v))
 		if merge_options is not None:
 			self.gatk_program = merge_options['Programs']['GATK']
 			self.reference = merge_options['Reference Files']['reference genome']
@@ -495,6 +519,13 @@ class Truthset:
 					The number of callers that must have called a snp
 					variant to have it marked as a true positive.
 		"""
+		log_message = "Truthset()"
+		LOGGER.info(log_message)
+		LOGGER.info("\tsamples = list({})".format(type(samples[0])))
+		LOGGER.info("\ttruthset_type = {}".format(truthset_type))
+		LOGGER.info("\tKeyword Arguments:")
+		for k, v in kwargs.items():
+			LOGGER.info("\t{} =\t{}".format(k, v))
 		self.verbose = kwargs.get('verbose', True)
 		if self.verbose:
 			print("Generating Truthset...")
@@ -1060,6 +1091,7 @@ class SomaticSeqPipeline:
 		"""
 
 		####### Define the relevant files, folders, and programs required for this pipeline #######
+		LOGGER.info("SomaticSeq")
 		self.somaticseq_folder = options['Programs']['SomaticSeq']
 		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
 		self.ada_builder_script = os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
@@ -1117,7 +1149,8 @@ class SomaticSeqPipeline:
 			-------
 				[somaticseq output folder]/training-[training type]/[barcode]/[files]
 		"""
-
+		LOGGER.info("SomaticSeq._runTrainer()")
+		LOGGER.info("\tpatient_info = {}".format(patient_info['PatientID']))
 		patientId              = patient_info['PatientID']
 		normal_bam_filename    = patient_info['NormalBAM']
 		tumor_bam_filename     = patient_info['TumorBAM']
@@ -1181,19 +1214,26 @@ class SomaticSeqPipeline:
 			'indelTable': 		os.path.join(tof, "Ensemble.sINDEL.tsv"),
 			'snpTable': 		os.path.join(tof, "Ensemble.sSNV.tsv")
 		}
+		LOGGER.info("\tExpected Output:")
+		for k, v in expected_output.items():
+			LOGGER.info("\t{}\t{}".format(k, v))
 		if any([not os.path.exists(fn) for fn in expected_output.values()]):
 			systemtools.Terminal(command, use_system = True)
 		return expected_output
 
-	def _TsvToVcf(self, vcf_filename):
+	def _TsvToVcf(self, tsv_filename):
 		""" Converts a SomaticSeq TSV file to a VCF file in the same folder.
 		"""
-		output_file = os.path.splitext(vcf_filename)[0] + '.vcf'
+		output_file = os.path.splitext(tsv_filename)[0] + '.vcf'
+		LOGGER.info("SomaticSeq._TsvToVcf")
+		LOGGER.info("tsv_filename = ", tsv_filename)
+		LOGGER.info("\tvcf_filename = ", output_file)
+		
 
 		command = """{script} -tsv {table} -vcf {output} -pass 0.7 -low 0.1 -tools {tools} -phred"""
 		command = command.format(
 			script = self.tsv_to_vcf_script,
-			table = vcf_filename,
+			table = tsv_filename,
 			output = output_file,
 			tools = "")
 
@@ -1204,6 +1244,8 @@ class SomaticSeqPipeline:
 	def _combineTables(self, tables):
 		""" Combines the output Ensemble tables.
 		"""
+		LOGGER.info("SomaticSeq._combineTables()")
+		LOGGER.info("\tlen(tables) = {}".format(len(tables)))
 		output_folder = getPipelineFolder('somaticseq-merged')
 
 		merged_indel_table_filename = os.path.join(
@@ -1244,7 +1286,9 @@ class SomaticSeqPipeline:
 	def _runManualClassifier(self, indel_table, snp_table):
 		""" Trains the model using the provided tables.
 		"""
-		print("Running _runManualClassifier")
+		LOGGER.info("SomaticSeq._runManualClassifier()")
+		LOGGER.info("\tsnp_table: ", snp_table)
+
 		output_folder = getPipelineFolder("somaticseq-classifier")
 
 		command = "{script} {table}"
@@ -1274,6 +1318,9 @@ class SomaticSeqPipeline:
 		""" Runs the Somaticseq prediction model.
 		"""
 		patientId = patient_info['PatientID']
+		LOGGER.info("SomaticSeq._runPredictor()")
+		LOGGER.info("\tpatient = ", patientId)
+		LOGGER.info("\tclassifier = ", classifier)
 		normal_bam_filename    = patient_info['NormalBAM']
 		tumor_bam_filename     = patient_info['TumorBAM']
 		exome_targets_filename = patient_info['ExomeTargets']
@@ -1509,32 +1556,31 @@ class Pipeline:
 		verbose = kwargs.get('verbose', True)
 
 		if verbose:
-			print("training samples: ")
+			print("Pipeline: training samples: ")
 			for element in training_samples:
 				print("\t", element['PatientID'])
 			print()
-			print("prediction samples: ")
+			print("Pipeline: prediction samples: ")
 			for element in prediction_samples:
 				print("\t", element['PatientID'])
 		
 		##################### Pre-process the callsets of the training samples. ####################
 		for sample in training_samples:
 			#### Fix the files that will be used to generate the truthset (the training samples) ###
-			if verbose:
-				print("Pre-processing samples...")
-				print("retrieving the original callset")
+			print("Pipeline: Processing ", sample['PatientID'])
+			print("\tPipeline: retrieving the original callset")
 			original_callset     = getSampleCallset(sample['PatientID'], 'original')
 			fixed_callset_folder = getCallsetFolder(sample['PatientID'], 'original-fixed')
 
 			somaticseq_folder = options['Programs']['SomaticSeq']
-			print("fixing files...")
+			print("\tvcftools.fixCallerOutputs()")
 			fixed_callset = vcftools.fixCallerOutputs(
 				original_callset, somaticseq_folder, output_folder = fixed_callset_folder)
 			################### Separate the corrected files into indels and snps ##################
-			print("splitting the variants...")
+			print("\tgetCallsetFolder()")
 			split_callset_output_folder = getCallsetFolder(
 				sample['PatientID'], 'original-fixed-split')
-
+			print("\tvcftools.splitCallset()")
 			split_callset = vcftools.splitCallset(fixed_callset, split_callset_output_folder)
 
 		# Generate a truthset using the training samples. Separate indel/snp truthsets will be generated.

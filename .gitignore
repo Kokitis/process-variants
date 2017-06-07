@@ -137,3 +137,10 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Pycharm files
+*.idea*
+.idea/
+.idea\
+
+# Other python files
