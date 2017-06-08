@@ -29,19 +29,6 @@ import pytools.tabletools as tabletools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
 
-def configurePipelineLogger():
-	import datetime
-	date = datetime.datetime.now().isoformat().split('T')[0]
-	logger_filename = os.path.join(os.getcwd(), date + 'log.txt')
-	pipeline_logger = logging.getLogger('callstack_logger')
-	hdlr = logging.FileHandler(logger_filename)
-	formatter = logging.Formatter('%(asctime)s %(levelname)s\t%(message)s')
-	hdlr.setFormatter(formatter)
-	pipeline_logger.addHandler(hdlr)
-	pipeline_logger.setLevel(logging.INFO)
-
-	return pipeline_logger
-LOGGER = configurePipelineLogger()
 
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
@@ -88,6 +75,7 @@ def getCallsetFolder(patientid, kind = 'original'):
 					merged_callset
 						...
 	"""
+	print("getCallsetFolder({}, kind = {})".format(patientid, kind))
 	base_callset_folder = getPipelineFolder('callsets')
 
 	if kind == 'original':
@@ -102,20 +90,6 @@ def getCallsetFolder(patientid, kind = 'original'):
 		message = "The callset type is not defined: '{}'".format(kind)
 		raise ValueError(message)
 	callset_folder = _concatPaths(base_callset_folder, patientid, subfolder)
-	if TEST_CHROMOSOME is not None:
-		chromosome_callset_folder = _concatPaths(callset_folder, patientid, subfolder + '_chroms')
-		_empty_folder = not os.path.exists(chromosome_callset_folder)
-		if not _empty_folder: 
-			_empty_folder = len(os.listdir(chromosome_callset_folder)) == 0
-
-
-		if _empty_folder:
-			print("Need to split the callset:")
-			print("\tOld Folder: ", callset_folder)
-			print("\tNew Folder: ", chromosome_callset_folder)
-			vcftools.splitCallsetByChromosome(callset_folder, chromosome_callset_folder)
-		callset_folder = os.path.join(chromosome_callset_folder, TEST_CHROMOSOME)
-	
 	
 	filetools.checkDir(callset_folder, True)
 	# print("Callset Folder: ", callset_folder)
@@ -137,11 +111,11 @@ def getPipelineFolder(step, **kwargs):
 					[training_type]
 			vcftomaf
 	"""
-	LOGGER.info("getPipelineFolder()")
-	LOGGER.info("\tstep = ", step)
-	LOGGER.info("\tKeyword Arguments")
+	print("getPipelineFolder()")
+	print("\tstep = {}".format(step))
+	print("\tKeyword Arguments")
 	for k, v in kwargs.items():
-		LOGGER.info("\t{} = \t{}".format(k, v))
+		print("\t{} = \t{}".format(k, v))
 		
 	if 'callsets' in step:
 		folder_names = ("1_callsets")
@@ -248,10 +222,10 @@ class GATKMergeSampleCallsets:
 				variants:
 		"""
 		log_message = "GATKMergeSampleCallsets(merge_options = {})".format(merge_options)
-		LOGGER.info(log_message)
-		LOGGER.info('\tKeyword Arguements:')
+		print(log_message)
+		print('\tKeyword Arguements:')
 		for k, v in kwargs.items():
-			LOGGER.info("\t{}\t{}".format(k, v))
+			print("\t{}\t{}".format(k, v))
 		if merge_options is not None:
 			self.gatk_program = merge_options['Programs']['GATK']
 			self.reference = merge_options['Reference Files']['reference genome']
@@ -520,12 +494,12 @@ class Truthset:
 					variant to have it marked as a true positive.
 		"""
 		log_message = "Truthset()"
-		LOGGER.info(log_message)
-		LOGGER.info("\tsamples = list({})".format(type(samples[0])))
-		LOGGER.info("\ttruthset_type = {}".format(truthset_type))
-		LOGGER.info("\tKeyword Arguments:")
+		print(log_message)
+		print("\tsamples = list({})".format(type(samples[0])))
+		print("\ttruthset_type = {}".format(truthset_type))
+		print("\tKeyword Arguments:")
 		for k, v in kwargs.items():
-			LOGGER.info("\t{} =\t{}".format(k, v))
+			print("\t{} =\t{}".format(k, v))
 		self.verbose = kwargs.get('verbose', True)
 		if self.verbose:
 			print("Generating Truthset...")
@@ -1091,7 +1065,7 @@ class SomaticSeqPipeline:
 		"""
 
 		####### Define the relevant files, folders, and programs required for this pipeline #######
-		LOGGER.info("SomaticSeq")
+		print("SomaticSeq")
 		self.somaticseq_folder = options['Programs']['SomaticSeq']
 		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
 		self.ada_builder_script = os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
@@ -1149,8 +1123,8 @@ class SomaticSeqPipeline:
 			-------
 				[somaticseq output folder]/training-[training type]/[barcode]/[files]
 		"""
-		LOGGER.info("SomaticSeq._runTrainer()")
-		LOGGER.info("\tpatient_info = {}".format(patient_info['PatientID']))
+		print("SomaticSeq._runTrainer()")
+		print("\tpatient_info = {}".format(patient_info['PatientID']))
 		patientId              = patient_info['PatientID']
 		normal_bam_filename    = patient_info['NormalBAM']
 		tumor_bam_filename     = patient_info['TumorBAM']
@@ -1214,9 +1188,9 @@ class SomaticSeqPipeline:
 			'indelTable': 		os.path.join(tof, "Ensemble.sINDEL.tsv"),
 			'snpTable': 		os.path.join(tof, "Ensemble.sSNV.tsv")
 		}
-		LOGGER.info("\tExpected Output:")
+		print("\tExpected Output:")
 		for k, v in expected_output.items():
-			LOGGER.info("\t{}\t{}".format(k, v))
+			print("\t{}\t{}".format(k, v))
 		if any([not os.path.exists(fn) for fn in expected_output.values()]):
 			systemtools.Terminal(command, use_system = True)
 		return expected_output
@@ -1225,9 +1199,9 @@ class SomaticSeqPipeline:
 		""" Converts a SomaticSeq TSV file to a VCF file in the same folder.
 		"""
 		output_file = os.path.splitext(tsv_filename)[0] + '.vcf'
-		LOGGER.info("SomaticSeq._TsvToVcf")
-		LOGGER.info("tsv_filename = ", tsv_filename)
-		LOGGER.info("\tvcf_filename = ", output_file)
+		print("SomaticSeq._TsvToVcf")
+		print("tsv_filename = {}".format(tsv_filename))
+		print("\tvcf_filename = {}".format(output_file))
 		
 
 		command = """{script} -tsv {table} -vcf {output} -pass 0.7 -low 0.1 -tools {tools} -phred"""
@@ -1244,8 +1218,8 @@ class SomaticSeqPipeline:
 	def _combineTables(self, tables):
 		""" Combines the output Ensemble tables.
 		"""
-		LOGGER.info("SomaticSeq._combineTables()")
-		LOGGER.info("\tlen(tables) = {}".format(len(tables)))
+		print("SomaticSeq._combineTables()")
+		print("\tlen(tables) = {}".format(len(tables)))
 		output_folder = getPipelineFolder('somaticseq-merged')
 
 		merged_indel_table_filename = os.path.join(
@@ -1286,8 +1260,8 @@ class SomaticSeqPipeline:
 	def _runManualClassifier(self, indel_table, snp_table):
 		""" Trains the model using the provided tables.
 		"""
-		LOGGER.info("SomaticSeq._runManualClassifier()")
-		LOGGER.info("\tsnp_table: ", snp_table)
+		print("SomaticSeq._runManualClassifier()")
+		print("\tsnp_table: {}".format(snp_table))
 
 		output_folder = getPipelineFolder("somaticseq-classifier")
 
@@ -1318,9 +1292,10 @@ class SomaticSeqPipeline:
 		""" Runs the Somaticseq prediction model.
 		"""
 		patientId = patient_info['PatientID']
-		LOGGER.info("SomaticSeq._runPredictor()")
-		LOGGER.info("\tpatient = ", patientId)
-		LOGGER.info("\tclassifier = ", classifier)
+		print("SomaticSeq._runPredictor()")
+		print("\tpatient = {}".format(patientId))
+		print("\tclassifier = {}".format(classifier))
+
 		normal_bam_filename    = patient_info['NormalBAM']
 		tumor_bam_filename     = patient_info['TumorBAM']
 		exome_targets_filename = patient_info['ExomeTargets']
@@ -1328,6 +1303,7 @@ class SomaticSeqPipeline:
 		prediction_output_folder = getPipelineFolder(
 			'somaticseq-prediction-tables', patientId = patientId)
 		callset = getSampleCallset(patientId, 'original')
+		pprint(callset)
 
 		command = """{somaticseq} \
 			--mutect2 {mutect} \
@@ -1379,6 +1355,10 @@ class SomaticSeqPipeline:
 
 		if not os.path.exists(indel_table) or not os.path.exists(snp_table):
 			systemtools.Terminal(command, use_system = True)
+		else:
+			print("\tThe following files already exist: ")
+			print("\t" + indel_table)
+			print("\t" + snp_table)
 
 		indel_vcf = self._TsvToVcf(indel_table)
 		snp_vcf   = self._TsvToVcf(snp_table)
@@ -1565,7 +1545,7 @@ class Pipeline:
 				print("\t", element['PatientID'])
 		
 		##################### Pre-process the callsets of the training samples. ####################
-		for sample in training_samples:
+		for sample in training_samples + prediction_samples:
 			#### Fix the files that will be used to generate the truthset (the training samples) ###
 			print("Pipeline: Processing ", sample['PatientID'])
 			print("\tPipeline: retrieving the original callset")
@@ -1618,6 +1598,16 @@ class Pipeline:
 		# Combine MAFs
 
 
+def debugPiplineSamples(self, sample_list):
+	""" Generates a list of vcf files that have been fixed and split
+		by chromosome.
+
+	"""
+
+	for sample in sample_list:
+		patientId = sample['PatientID']
+
+
 """
 	Truthset -> Somaticseq training -> somaticseq prediction -> filter -> convert to MAF - > Combine MAFs
 """
@@ -1639,15 +1629,16 @@ GATK_MERGE_CALLSET = GATKMergeSampleCallsets(options)
 if __name__ == "__main__" and True:
 	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
-	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
+	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.CHR1.tsv")
 
 	full_sample_list = tabletools.readCSV(full_sample_list_filename)
 
 	training_type = 'Intersection'
-	training_sample_ids = ['TCGA-2H-A9GR']
+	training_sample_ids = ['TCGA-2H-A9GR-CHR1']
+	prediction_sample_ids = ['TCGA-L5-A43M-CHR1', 'TCGA-R6-A6Y2-CHR1']
 
 	training_samples    = [i for i in full_sample_list if i['PatientID'] in training_sample_ids]
-	prediction_samples  = [i for i in full_sample_list if i['PatientID'] not in training_sample_ids]
+	prediction_samples  = [i for i in full_sample_list if i['PatientID'] in prediction_sample_ids]
 
 	Pipeline(training_samples, prediction_samples, options, training_type)
 
