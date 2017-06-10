@@ -1039,6 +1039,12 @@ class VCFtoMAF:
 		"""
 		pass
 
+class ManualSomaticSeqPipeline:
+	def __init__(self):
+		pass
+
+	def _preprocessVariantFiles(self):
+		pass
 
 class SomaticSeqPipeline:
 	def __init__(self, training_samples, prediction_samples, options, truthset):
