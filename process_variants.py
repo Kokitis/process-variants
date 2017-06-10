@@ -26,6 +26,7 @@ sys.path.append(GITHUB_FOLDER)
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
+import pytools.timetools as timetools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
 
@@ -156,7 +157,7 @@ def getPipelineFolder(step, **kwargs):
 	else:
 		pipeline_folder = _concatPaths(folder_names)
 	filetools.checkDir(pipeline_folder, True)
-	print("getPipelineFolder({})".format(step))
+	print("\tresult: ", pipeline_folder)
 	return pipeline_folder
 
 
@@ -541,39 +542,41 @@ class Truthset:
 		################################# Define Filenames ########################################
 		base_truthset_files_folder = getPipelineFolder('truthset-files', patientId = patientId)
 
-		final_indel_truthset_filename = os.path.join(
-			base_truthset_files_folder,
-			"{}.{}.indel.truthset.vcf".format(patientId, training_type)
-		)
-
-		final_snp_truthset_filename = os.path.join(
-			base_truthset_files_folder,
-			"{}.{}.snp.truthset.vcf".format(patientId, training_type)
-		)
-
 		merged_indel_callset_filename = os.path.join(
 			base_truthset_files_folder,
 			"{}.merged.indel.vcf".format(patientId)
 		)
 		merged_snp_callset_filename = os.path.join(
 			base_truthset_files_folder,
-			"{}.merged.indel.vcf".format(patientId)
+			"{}.merged.snp.vcf".format(patientId)
+		)
+		
+		final_indel_truthset_filename = os.path.join(
+			base_truthset_files_folder,
+			"{}.{}.final.indel.truthset.vcf".format(patientId, training_type)
 		)
 
+		final_snp_truthset_filename = os.path.join(
+			base_truthset_files_folder,
+			"{}.{}.snp.final.truthset.vcf".format(patientId, training_type)
+		)
 		###### Merge the callset files. The final truthset will be generated from this file. ######
 		# Retrieve the callset for this sample.
 		# Want to use the files that have been split into indels/snps and corrected.
 		if self.verbose:
 			"\tRetrieving indel/snp callsets..."
+
 		sample_indel_callset = getSampleCallset(patientId, 'original-fixed-split', 'indel')
 		sample_snp_callset   = getSampleCallset(patientId, 'original-fixed-split', 'snp')
 		if self.verbose:
-			print("\tnumber of snp files found: ", len(sample_snp_callset))
-			print("\tnumber of indel files found: ", len(sample_indel_callset))
+			print("\tTruthset._getSampleCallset: number of snp files found: ", len(sample_snp_callset))
+			print("\tTruthset._getSampleCallset: number of indel files found: ", len(sample_indel_callset))
+		
 		if len(sample_snp_callset) < 5 or len(sample_indel_callset) < 5:
 			pprint(sample_indel_callset)
 			pprint(sample_snp_callset)
 			raise ValueError()
+
 		# Merge the full outputs from each caller.
 		# The snps and indels need to be merged separately of each other, due to varscan/strelka
 		merged_indel_callset_filename = GATK_MERGE_CALLSET(
@@ -795,19 +798,20 @@ class Truthset:
 
 		# MuSE and Somaticsniper are snp-only, and should not be counted in the intersection of indel callsets
 		if record.is_indel:
-			num_callers_in_intersection = kwargs.get('indel_intersection')
+			num_callers_in_intersection = kwargs['indel_intersection']
 		else:
-			num_callers_in_intersection = kwargs.get('snp_intersection')
+			num_callers_in_intersection = kwargs['snp_intersection']
 
 		_is_intersection = len(callset) == 1 and callset[0] == 'Intersection'
-		_is_in_n_sets = int(len(callset) >= num_callers_in_intersection)
-		validation_status = int(_is_intersection or _is_in_n_sets)
+
+		_is_in_n_sets = len(callset) >= num_callers_in_intersection
+		validation_status = _is_intersection or _is_in_n_sets
 
 		row = {
 			'chrom': record.CHROM,
 			'position': record.POS,
 			'validation method': 'Intersection',
-			'validation status': validation_status
+			'validation status': _is_intersection
 		}
 		return row
 
@@ -1066,6 +1070,7 @@ class SomaticSeqPipeline:
 
 		####### Define the relevant files, folders, and programs required for this pipeline #######
 		print("SomaticSeq")
+
 		self.somaticseq_folder = options['Programs']['SomaticSeq']
 		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
 		self.ada_builder_script = os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
@@ -1080,30 +1085,109 @@ class SomaticSeqPipeline:
 		self.training_type = truthset.training_type
 		self.truthset = truthset.export()
 
-		self.training_folder   = getPipelineFolder('somaticseq-training', kind = self.training_type)
-		self.prediction_folder = getPipelineFolder('somaticseq-prediction', kind = self.training_type)
-		filetools.checkDir(self.training_folder)
-		filetools.checkDir(self.prediction_folder)
-
 		############################## Train the Somaticseq algorithm #############################
+		if len(training_samples) == 1:
+			training_sample = training_samples[0]
+			somaticseq_classifier = self._runFullTrainer(training_sample)
 
-		self.trainer_list = list()
-		for training_sample in training_samples:
-			trainer = self._runTrainer(training_sample)
-			self.trainer_list.append(trainer)
+		else:
+			self.trainer_list = list()
+			for training_sample in training_samples:
+				trainer = self._runTrainer(training_sample)
+				self.trainer_list.append(trainer)
 
-		#################### Combine the per-patient tables into a single set #####################
+			#################### Combine the per-patient tables into a single set #####################
 
-		self.ensemble_tables = self._combineTables(self.trainer_list)
-		self.trainer = self._runManualClassifier(
-			self.ensemble_tables['indelTable'], 
-			self.ensemble_tables['snpTable'])
+			self.ensemble_tables = self._combineTables(self.trainer_list)
+			somaticseq_classifier = self._runManualClassifier(
+				self.ensemble_tables['indelTable'], 
+				self.ensemble_tables['snpTable'])
 
 		################# Run the prediction model on the prediction variants. ####################
 		self.predictions = list()
 		for prediction_sample in prediction_samples:
-			prediction = self._runPredictor(prediction_sample, self.trainer)
+			timer = timetools.Timer()
+			prediction = self._runPredictor(prediction_sample, somaticseq_classifier)
 			self.predictions.append(prediction)
+			print(timer.to_iso())
+	def _runFullTrainer(self, patient_info):
+		"""
+		"""
+		print("SomaticSeq._runFullTrainer()")
+		print("\tpatient_info = {}".format(patient_info['PatientID']))
+
+		patientId              = patient_info['PatientID']
+		normal_bam_filename    = patient_info['NormalBAM']
+		tumor_bam_filename     = patient_info['TumorBAM']
+		exome_targets_filename = patient_info['ExomeTargets']
+		
+		callset = getSampleCallset(patientId, 'original')
+		trainer_output_folder = getPipelineFolder(
+			'somaticseq-training-tables', patientId = patientId)
+
+		command = """{somaticseq} \
+			--ada-r-script {ada} \
+			--keep-intermediates 1 \
+			--mutect2 {mutect} \
+			--varscan-snv {varscan_snv} \
+			--varscan-indel {varscan_indel} \
+			--sniper {sniper} \
+			--muse {muse} \
+			--strelka-snv {strelka_snv} \
+			--strelka-indel {strelka_indel} \
+			--normal-bam {normal} \
+			--tumor-bam {tumor} \
+			--genome-reference {reference} \
+			--cosmic {cosmic} \
+			--dbsnp {dbSNP} \
+			--gatk {gatk} \
+			--inclusion-region {targets} \
+			--truth-snv {truthset_snp} \
+			--truth-indel {truthset_indel} \
+			--output-dir {output_folder}""".format(
+				somaticseq      = self.somaticseq_program,
+				gatk            = self.gatk_program,
+				ada             = self.ada_builder_script,
+
+				normal          = normal_bam_filename,
+				tumor           = tumor_bam_filename,
+				targets         = exome_targets_filename,
+				reference       = self.reference,
+				cosmic          = self.cosmic,
+				dbSNP           = self.dbSNP,
+
+				muse            = callset['muse'],
+				mutect          = callset['mutect2'],
+				sniper          = callset['somaticsniper'],
+				strelka_snv     = callset['strelka-snp'],
+				strelka_indel   = callset['strelka-indel'],
+				varscan_snv     = callset['varscan-snp'],
+				varscan_indel   = callset['varscan-indel'],
+				
+				truthset_indel  = self.truthset['indel'],
+				truthset_snp    = self.truthset['snp'],
+				output_folder   = trainer_output_folder
+		)
+
+		tof = trainer_output_folder  # For readability
+
+		expected_output = {
+			'untrainedIndels': 	os.path.join(tof, "Untrained.sINDEL.vcf"),
+			'untrainedSnps':   	os.path.join(tof, "Untrained.sSNV.vcf"),
+			'indelTable': 		os.path.join(tof, "Ensemble.sINDEL.tsv"),
+			'snpTable': 		os.path.join(tof, "Ensemble.sSNV.tsv"),
+			'indelClassifier':  os.path.join(tof, "Ensemble.sINDEL.tsv.Classifier.RData"),  # The '.tsv' is intentional
+			'snpClassifier':    os.path.join(tof, "Ensemble.sSNV.tsv.Classifier.RData")
+		}
+		print("\tExpectedOutput:")
+		for k, v in expected_output.items():
+			print("\t{}\t{}\t{}".format(k, os.path.exists(v), v))
+
+		files_missing = not os.path.exists(expected_output['indelClassifier'])
+		files_missing = files_missing or not os.path.exists(expected_output['snpClassifier'])
+		if files_missing:
+			systemtools.Terminal(command, use_system = True)
+		return expected_output
 
 	def _runTrainer(self, patient_info):
 		"""
@@ -1174,13 +1258,7 @@ class SomaticSeqPipeline:
 				truthset_indel  = self.truthset['indel'],
 				truthset_snp    = self.truthset['snp'],
 				output_folder   = trainer_output_folder)
-		"""
-		expected_output = {
-			'indelTable':      os.path.join(trainer_output_folder, "Ensemble.sINDEL.tsv"),
-			'snvTable':        os.path.join(trainer_output_folder, "Ensemble.sSNV.tsv"),
-			'indelClassifier': os.path.join(trainer_output_folder, "Ensemble.sINDEL.tsv.Classifier.RData"),
-			'snpClassifier':   os.path.join(trainer_output_folder, "Ensemble.sSNV.tsv.Classifier.RData")
-		}"""
+
 		tof = trainer_output_folder  # For readability
 		expected_output = {
 			'untrainedIndels': 	os.path.join(tof, "Untrained.sINDEL.vcf"),
@@ -1223,10 +1301,10 @@ class SomaticSeqPipeline:
 		output_folder = getPipelineFolder('somaticseq-merged')
 
 		merged_indel_table_filename = os.path.join(
-			output_folder, "Ensemble.sINDEL.merged.{0}.tsv".format(self.training_type)
+			output_folder, "Ensemble.sINDEL.mergedFrom{}.{}.tsv".format(len(tables), self.training_type)
 		)
 		merged_snp_table_filename   = os.path.join(
-			output_folder, "Ensemble.sSNV.merged.{0}.tsv".format(  self.training_type)
+			output_folder, "Ensemble.sSNV.mergedFrom{}.{}.tsv".format(len(tables), self.training_type)
 		)
 
 		indel_table_filenames = [t['indelTable'] for t in tables]
@@ -1282,9 +1360,9 @@ class SomaticSeqPipeline:
 		}
 
 		if not os.path.exists(expected_output['indelClassifier']):
-			systemtools.Terminal(indel_command)
+			systemtools.Terminal(indel_command, use_system = True)
 		if not os.path.exists(expected_output['snpClassifier']):
-			systemtools.Terminal(snp_command)
+			systemtools.Terminal(snp_command, use_system = True)
 
 		return expected_output
 
@@ -1303,7 +1381,6 @@ class SomaticSeqPipeline:
 		prediction_output_folder = getPipelineFolder(
 			'somaticseq-prediction-tables', patientId = patientId)
 		callset = getSampleCallset(patientId, 'original')
-		pprint(callset)
 
 		command = """{somaticseq} \
 			--mutect2 {mutect} \
