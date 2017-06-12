@@ -2,6 +2,8 @@ import os
 import sys
 import configparser
 import shutil
+from pprint import pprint
+
 if os.name == 'nt':
 	GITHUB_FOLDER = os.path.join(os.getenv('USERPROFILE'), 'Documents', 'Github')
 else:
@@ -11,6 +13,8 @@ sys.path.append(GITHUB_FOLDER)
 import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
+import pytools.timetools as timetools
+import varianttools.callertools as callertools
 
 
 def getBasename(filename):
@@ -19,32 +23,43 @@ def getBasename(filename):
 	return bn
 
 class SomaticSeqPipeline:
-	def __init__(self, sample, callset, output_folder, options):
+	def __init__(self, sample, output_folder, options):
 		self.output_folder = output_folder
 		self.somaticseq_folder = options['Programs']['SomaticSeq']
 		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
-		self.modify_vjsd_script = os.path.join(self.somaticseq_folder, "SSeq_merged.vcf2tsv.py")
+		self.modify_vjsd_script = os.path.join(self.somaticseq_folder, "modify_VJSD.py")
 		self.ada_trainer_script = os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
-		self.ada_predictor_script=os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_predictor.R")
+		self.ada_prediction_script=os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_predictor.R")
 		self.tsv_to_vcf_script  = os.path.join(self.somaticseq_folder, "SSeq_tsv2vcf.py")
+		self.merged_vcf2tsv_script     = os.path.join(self.somaticseq_folder, "SSeq_merged.vcf2tsv.py")
 		self.gatk_program = options['Programs']['GATK']
+
+		self.snp_classifier = "/home/upmc/Documents/Genomic_Analysis/debug_folder/training/TCGA-2H-A9GR/TCGA-2H-A9GR.training.modified.merged.excluded.snp.tsv.Classifier.RData"
 
 		self.targets    = sample['ExomeTargets']
 		self.cosmic     = options['Reference Files']['cosmic']
 		self.dbSNP      = options['Reference Files']['dbSNP']
 		self.reference  = options['Reference Files']['reference genome']
 
-		self.truthset = os.path.join(PIPELINE_FOLDER, "truthset", "files", "TCGA-2H-A9GR-CHR1")
+		self.truthset = os.path.join(
+			PIPELINE_FOLDER, 
+			"truthset", 
+			"files", 
+			"TCGA-2H-A9GR-CHR1", 
+			"TCGA-2H-A9GR-CHR1.Intersection.snp.final.truthset.vcf"
+		)
 
 		self.runWorkflow(sample, callset)
 
-	def _convertToTable(self, sample, callset, merged_callset):
+	def _convertToTable(self, sample, callset, merged_callset, output_folder):
 		print("Converting to a table...")
+		timer = timetools.Timer()
 		output_filename = os.path.join(
 			output_folder,
 			"{}.training.modified.merged.excluded.snp.tsv".format(sample['PatientID'])
 		)
-		command = """{script} \
+		print("Merged_callset: {}\t{}".format(os.path.exists(merged_callset), merged_callset))
+		command = """python3 {script} \
 			-ref {reference} \
 			-nbam {normal} \
 			-tbam {tumor} \
@@ -58,22 +73,25 @@ class SomaticSeqPipeline:
 			-strelka {strelka} \
 			-varscan {varscan} \
 			-outfile {output}""".format(
-				script = self.ada_trainer_script,
-				reference = self.reference,
+				script 		= self.merged_vcf2tsv_script,
+				reference 	= self.reference,
 				normal = sample['NormalBAM'],
-				tumor = sample['TumorBAM'],
-				dbSNP = self.dbSNP,
+				tumor  = sample['TumorBAM'],
+				dbSNP  = self.dbSNP,
 				cosmic = self.cosmic,
-				truth = self.truthset,
+				truth  = self.truthset,
 				merged = merged_callset,
-				muse = callset['muse'],
-				mutect2 = callset['mutect2'],
-				somaticsniper = callset['somaticsniper'],
-				strelka = callset['strelka-snp'],
-				varscan = callset['varscan-snp'],
-				output = output_filename
+				muse   			= callset['muse'],
+				mutect2 		= callset['mutect2'],
+				somaticsniper 	= callset['somaticsniper'],
+				strelka 		= callset['strelka-snp'],
+				varscan 		= callset['varscan-snp'],
+				output 			= output_filename
 			)
-		systemtools.Terminal(command)
+		if not os.path.exists(output_filename):
+			systemtools.Terminal(command, use_system = True)
+		print("\tResult: {}\t{}".format(os.path.exists(output_filename), output_filename))
+		print(timer.to_iso())
 		return output_filename
 
 	def _concatPaths(self, *paths):
@@ -100,9 +118,11 @@ class SomaticSeqPipeline:
 		"""
 		if step == 'files':
 			folder_names = 'files'
+		elif step == 'callset':
+			folder_names = ()
 		elif step == 'somaticseq':
 			folder_names = ('somaticseq')
-		elif step == 'training':
+		elif step == 'trainer':
 			folder_names = ('training', patientId)
 		elif step == 'prediction':
 			folder_names = ('prediction', patientId)
@@ -128,46 +148,100 @@ class SomaticSeqPipeline:
 			-T CombineVariants \
 			-R {reference} \
 			-setKey null \
-			-genotypemergeoption UNSORTED \
+			-genotypeMergeOptions UNSORTED \
 			-V {muse} \
 			-V {mutect2} \
 			-V {somaticsniper} \
 			-V {strelka} \
 			-V {varscan} \
-			-out {output}""".format(
+			-o {output}""".format(
 			gatk = self.gatk_program,
 			reference = self.reference,
-			muse = callset['muse'],
-			mutect2 = callset['mutect'],
+			muse = 		callset['muse'],
+			mutect2 = 	callset['mutect2'],
 			somaticsniper = callset['somaticsniper'],
-			strelka = callset['strelka-snp'],
-			varscan = callset['varscan-snp'],
-			output = output_filename
+			strelka = 	callset['strelka-snp'],
+			varscan = 	callset['varscan-snp'],
+			output = 	output_filename
 		)
-		systemtools.Terminal(command, use_system = True)
+		if not os.path.exists(output_filename):
+			systemtools.Terminal(command, use_system = True)
+		print("\tResult: {}\t{}".format(os.path.exists(output_filename), output_filename))
 		return output_filename
 
 	def runWorkflow(self, sample, callset):
-
+		print("Running Workflow...")
 		patientId = sample['PatientID']
+		method = 'prediction'
+		classifier = callertools.CallerClassifier()
+
+		callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/{}/original_callset".format(
+			sample['PatientID'])
+		callset = classifier(callset_folder)
+		pprint(callset)
+		process_output_folder = self._getSomaticseqFolder(method, patientId)
 		
-		process_output_folder = self._getSomaticseqFolder('training', patientId)
+		processed_callset = self._preprocessVariantFiles(
+			callset, 
+			process_output_folder, 
+			patientId)
 		
-		processed_callset = self._preprocessVariantFiles(callset, process_output_folder, patientId)
+		merged_raw_variant_file = self._mergeVariantFiles(
+			processed_callset, 
+			process_output_folder, 
+			patientId)
 		
-		merged_raw_variant_file = self._mergeVariantFiles(processed_callset, output_folder, patientId)
+		reduced_raw_variant_file= self._reduceVariantTargets(
+			merged_raw_variant_file, 
+			process_output_folder, 
+			patientId)
 		
-		reduced_raw_variant_file= self._reduceVariantTargets(merged_raw_variant_file, output_folder, patientId)
-		
-		trained_snp_table = self._convertToTable(sample, callset, reduced_raw_variant_file)
+		trained_snp_table = self._convertToTable(
+			sample, 
+			callset, 
+			reduced_raw_variant_file, 
+			process_output_folder)
+
+		if method == 'trainer':
+			self.buildTrainer(trained_snp_table)
+		elif method == 'prediction':
+			self.runPredictor(trained_snp_table)
 
 		return trained_snp_table
-	
+
+	def buildTrainer(self, input_filename):
+		print("Building model...")
+		timer = timetools.Timer()
+		command = "{script} {infile}".format(
+			script = self.ada_trainer_script,
+			infile = input_filename
+		)
+		systemtools.Terminal(command, use_system = True)
+		print(timer.to_iso())
+
+	def runPredictor(self, input_filename):
+
+		"""
+		"""
+		basename = getBasename(input_filename)
+		output_filename = "{}.predicted_scores.tsv".format(basename)
+
+		print("Predicting Scores...")
+		timer = timetools.Timer()
+		command = "{script} {classifier} {infile} {outfile}".format(
+			script = self.ada_prediction_script,
+			classifier = self.snp_classifier,
+			infile = input_filename,
+			outfile = output_filename
+		)
+		systemtools.Terminal(command, use_system = True)
+		print(timer.to_iso())
+
 	def _reduceVariantTargets(self, input_filename, output_folder, patientId):
 		print("Excluding non-exome targets...")
 		output_filename = os.path.join(
 			output_folder,
-			"{}training.modified.merged.excluded.vcf".format(patientId)
+			"{}.training.modified.merged.excluded.vcf".format(patientId)
 		)
 
 		command = """intersectBed -header -a {infile} -b {targets} > {output}""".format(
@@ -176,8 +250,8 @@ class SomaticSeqPipeline:
 			output = output_filename
 		)
 
-		systemtools.Terminal(command)
-
+		systemtools.Terminal(command, use_system = True)
+		print("\tResult: {}\t{}".format(os.path.exists(output_filename), output_filename))
 		return output_filename
 
 
@@ -231,7 +305,8 @@ options = configparser.ConfigParser()
 options.read(OPTIONS_FILENAME)
 
 if __name__ == "__main__":
-	sample_id = "TCGA-2H-A9GR-CHR1"
+	#sample_id = "TCGA-2H-A9GR"
+	sample_id = "TCGA-L5-A43M-CHR1"
 
 	full_sample_list_filename = os.path.join(
 		os.path.dirname(PIPELINE_FOLDER),
@@ -245,13 +320,13 @@ if __name__ == "__main__":
 
 
 	callset = {
-		'muse': 		_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.Muse.chr1.vcf',
+		'muse': 		_callset_folder + 'TCGA-L5-A43M-11A_vs_TCGA-L5-A43M-01A.Muse.chr1.vcf',
 		'mutect2': 		_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.mutect2.chr1.vcf',
 		'somaticsniper':_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.somaticsniper.chr1.vcf',
-		'strelka-snp': 		_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.passed.somatic.snvs.vcf.strelka.chr1.vcf',
-		'varscan-snp':		_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.raw.snp.Somatic.hc.chr1.vcf'
+		'strelka-snp': 	_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.passed.somatic.snvs.vcf.strelka.chr1.vcf',
+		'varscan-snp':	_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.raw.snp.Somatic.hc.chr1.vcf'
 	}
-	output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder"
-	SomaticSeqPipeline(sample, callset, output_folder, options)
+	test_output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder"
+	SomaticSeqPipeline(sample, test_output_folder, options)
 
 
