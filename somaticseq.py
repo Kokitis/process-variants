@@ -14,6 +14,8 @@ import pytools.systemtools as systemtools
 import pytools.filetools as filetools
 import pytools.tabletools as tabletools
 import pytools.timetools as timetools
+
+import varianttools.vcftools as vcftools
 import varianttools.callertools as callertools
 
 
@@ -34,7 +36,10 @@ class SomaticSeqPipeline:
 		self.merged_vcf2tsv_script     = os.path.join(self.somaticseq_folder, "SSeq_merged.vcf2tsv.py")
 		self.gatk_program = options['Programs']['GATK']
 
-		self.snp_classifier = "/home/upmc/Documents/Genomic_Analysis/debug_folder/training/TCGA-2H-A9GR/TCGA-2H-A9GR.training.modified.merged.excluded.snp.tsv.Classifier.RData"
+		training_folder = self._getSomaticseqFolder('trainer', 'TCGA-2H-A9GR')
+		self.snp_classifier = os.path.join(
+			training_folder, 
+			"TCGA-2H-A9GR.training.modified.merged.excluded.snp.tsv.Classifier.RData")
 
 		self.targets    = sample['ExomeTargets']
 		self.cosmic     = options['Reference Files']['cosmic']
@@ -81,15 +86,15 @@ class SomaticSeqPipeline:
 				cosmic = self.cosmic,
 				truth  = self.truthset,
 				merged = merged_callset,
-				muse   			= callset['muse'],
-				mutect2 		= callset['mutect2'],
-				somaticsniper 	= callset['somaticsniper'],
+				muse   			= callset['muse-snp'],
+				mutect2 		= callset['mutect2-snp'],
+				somaticsniper 	= callset['somaticsniper-snp'],
 				strelka 		= callset['strelka-snp'],
 				varscan 		= callset['varscan-snp'],
 				output 			= output_filename
 			)
-		if not os.path.exists(output_filename):
-			systemtools.Terminal(command, use_system = True)
+		#if not os.path.exists(output_filename):
+		systemtools.Terminal(command, use_system = True)
 		print("\tResult: {}\t{}".format(os.path.exists(output_filename), output_filename))
 		print(timer.to_iso())
 		return output_filename
@@ -147,7 +152,6 @@ class SomaticSeqPipeline:
 		command = """java -jar {gatk} \
 			-T CombineVariants \
 			-R {reference} \
-			-setKey null \
 			-genotypeMergeOptions UNSORTED \
 			-V {muse} \
 			-V {mutect2} \
@@ -157,9 +161,9 @@ class SomaticSeqPipeline:
 			-o {output}""".format(
 			gatk = self.gatk_program,
 			reference = self.reference,
-			muse = 		callset['muse'],
-			mutect2 = 	callset['mutect2'],
-			somaticsniper = callset['somaticsniper'],
+			muse = 		callset['muse-snp'],
+			mutect2 = 	callset['mutect2-snp'],
+			somaticsniper = callset['somaticsniper-snp'],
 			strelka = 	callset['strelka-snp'],
 			varscan = 	callset['varscan-snp'],
 			output = 	output_filename
@@ -175,9 +179,15 @@ class SomaticSeqPipeline:
 		method = 'prediction'
 		classifier = callertools.CallerClassifier()
 
-		callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/{}/original_callset".format(
+		original_callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/{}/original_callset".format(
 			sample['PatientID'])
-		callset = classifier(callset_folder)
+
+		split_callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/{}/original_corrected_split_callset".format(
+			sample['PatientID'])
+
+		original_callset = classifier(original_callset_folder)
+		vcftools.splitCallset(original_callset, split_callset_folder)
+		callset = classifier(split_callset_folder, type = 'snp')
 		pprint(callset)
 		process_output_folder = self._getSomaticseqFolder(method, patientId)
 		
@@ -224,7 +234,9 @@ class SomaticSeqPipeline:
 		"""
 		"""
 		basename = getBasename(input_filename)
+		output_folder = os.path.dirname(input_filename)
 		output_filename = "{}.predicted_scores.tsv".format(basename)
+		output_filename = os.path.join(output_folder, output_filename)
 
 		print("Predicting Scores...")
 		timer = timetools.Timer()
@@ -306,17 +318,17 @@ options.read(OPTIONS_FILENAME)
 
 if __name__ == "__main__":
 	#sample_id = "TCGA-2H-A9GR"
-	sample_id = "TCGA-L5-A43M-CHR1"
+	sample_id = "TCGA-L5-A43M"
 
 	full_sample_list_filename = os.path.join(
 		os.path.dirname(PIPELINE_FOLDER),
-		"DNA-Seq_sample_list.CHR1.tsv")
+		"DNA-Seq_sample_list.tsv")
 
 	full_sample_list = tabletools.Table(full_sample_list_filename)
 
 	sample = full_sample_list('PatientID', sample_id)
 
-	_callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/TCGA-2H-A9GR-CHR1/original_callset/"
+	_callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/TCGA-2H-A9GR/original_callset/"
 
 
 	callset = {
