@@ -2,7 +2,7 @@
 	Manages the file structure of the pipeline.
 """
 import os
-import filetools.filetools as filetools
+import pytools.filetools as filetools
 import varianttools.callertools as callertools
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 GET_CALLSET = callertools.CallerClassifier()
@@ -13,7 +13,7 @@ def _concatPaths(*paths):
 	path = os.path.join(PIPELINE_FOLDER, *paths)
 	return path
 
-def getCallsetFolder(patientId, kind):
+def _getCallsetFolder(patientId, kind):
 	if kind == 'original':
 		subfolder = "original_callset"
 	elif kind == 'original-split':
@@ -36,7 +36,7 @@ def getCallsetFolder(patientId, kind):
 def getPipelineFolder(step, patientId, kind = None, **kwargs):
 	step = step.split('-')
 	if 'callset' in step:
-		subfolders = getCallsetFolder(patientId, kind)
+		subfolders = _getCallsetFolder(patientId, kind)
 	elif 'truthset' in step:
 		step.remove('truthset')
 		subfolders = _getTruthsetFolder(patientId)
@@ -52,6 +52,7 @@ def getPipelineFolder(step, patientId, kind = None, **kwargs):
 		raise ValueError(message)
 
 	folder = _concatPaths(*subfolders)
+	print("{}:\t{}".format(step, folder))
 	filetools.checkDir(folder, True)
 	return folder
 
@@ -105,7 +106,7 @@ def getSampleCallset(patientid, callset_type, group = 'all'):
 	# Terms to determine which folders to skip when searching for variant files.
 	_exclusion_terms = ['strelka', 'chromosome']
 
-	callset_folder = getCallsetFolder(patientid, kind = callset_type)
+	callset_folder = getPipelineFolder('callset', patientid, kind = callset_type)
 	sample_variants = GET_CALLSET(
 		callset_folder, 
 		kind = callset_type, 

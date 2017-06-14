@@ -18,7 +18,7 @@ import pytools.timetools as timetools
 import varianttools.vcftools as vcftools
 import varianttools.callertools as callertools
 import time
-from pipeline_manager import getPipelineFolder, getCallsetFolder
+from pipeline_manager import getPipelineFolder
 
 def getBasename(filename):
 	bn = os.path.basename(filename)
@@ -26,12 +26,16 @@ def getBasename(filename):
 	return bn
 
 class SomaticSeqPipeline:
-	def __init__(self, kind, sample, options, truthset = None):
+	def __init__(self, kind, sample, options, truthset = None, snp_classifier = None):
 		"""
 			Parameters
 			----------
 				kind: {'trainer', 'prediction'}
 		"""
+		print("Runing Somaticseq...")
+		print("\tMode: ", kind)
+		print("\tsample: ", sample['PatientID'])
+
 		self.kind = kind
 		self.somaticseq_folder = options['Programs']['SomaticSeq']
 		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
@@ -47,9 +51,8 @@ class SomaticSeqPipeline:
 		self.dbSNP      = options['Reference Files']['dbSNP']
 		self.reference  = options['Reference Files']['reference genome']
 
-		self.snp_classifier = os.path.join(
-			getPipelineFolder('somaticseq-trainer', 'TCGA-2H-A9GR'),
-			"TCGA-2H-A9GR.training.modified.merged.excluded.snp.tsv.Classifier.RData")
+		self.snp_classifier = snp_classifier
+
 		if truthset is not None:
 			self.truthset = truthset
 		else:
@@ -62,7 +65,12 @@ class SomaticSeqPipeline:
 			)
 
 		self.runWorkflow(sample)
-
+	def export(self):
+		result = {
+			'classifier': self.classifier,
+			'table': self.trained_snp_table
+		}
+		return result
 	def runWorkflow(self, sample):
 		print("Running Workflow...")
 		patientId = sample['PatientID']
@@ -85,25 +93,26 @@ class SomaticSeqPipeline:
 			process_output_folder, 
 			patientId)
 		
-		trained_snp_table = self._convertToTable(
+		self.trained_snp_table = self._convertToTable(
 			sample, 
 			callset, 
 			reduced_raw_variant_file, 
 			process_output_folder)
 
 		if self.kind == 'trainer':
-			self.buildTrainer(trained_snp_table)
+			self.classifier = self.buildTrainer(self.trained_snp_table)
 		elif self.kind == 'prediction':
-			self.runPredictor(trained_snp_table)
+			self.classifier = None
+			self.final_table = self.runPredictor(self.trained_snp_table)
 
-		return trained_snp_table
+		return self.trained_snp_table
 
 	def _getRawCallset(self, patientId):
 		classifier = callertools.CallerClassifier()
 
-		original_callset_folder = getCallsetFolder(patientId, 'original')
+		original_callset_folder = getPipelineFolder('callset', patientId, 'original')
 
-		split_callset_folder = getCallsetFolder(patientId, 'original-split')
+		split_callset_folder = getPipelineFolder('callset', patientId, 'original-split')
 
 		original_callset = classifier(original_callset_folder)
 		
@@ -239,10 +248,13 @@ class SomaticSeqPipeline:
 			)
 
 		if self.kind == 'trainer':
-			command += "\\\n-truth " + self.truthset
+			command += " -truth " + self.truthset
 
 		#if not os.path.exists(output_filename):
-		systemtools.Terminal(command, use_system = True)
+		if not os.path.exists(output_filename):
+			systemtools.Terminal(command, use_system = True)
+		else:
+			print("The Somaticseq table already exists.")
 		print("\tResult: {}\t{}".format(os.path.exists(output_filename), output_filename))
 		stop_time = time.time()
 
@@ -256,7 +268,14 @@ class SomaticSeqPipeline:
 			script = self.ada_trainer_script,
 			infile = input_filename
 		)
-		systemtools.Terminal(command, use_system = True)
+		expected_output = input_filename + '.Classifier.RData'
+		print("expected_output: ", expected_output)
+		print(command)
+		if not os.path.exists(expected_output):
+			systemtools.Terminal(command, use_system = True)
+		else:
+			print("The Somaticseq classifier already exists.")
+		return expected_output
 
 	def runPredictor(self, input_filename):
 
@@ -274,6 +293,7 @@ class SomaticSeqPipeline:
 			infile = input_filename,
 			outfile = output_filename
 		)
+		print(command)
 		systemtools.Terminal(command, use_system = True)
 		return output_filename
 

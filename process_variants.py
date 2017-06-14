@@ -327,15 +327,10 @@ class Truthset:
 					The number of callers that must have called a snp
 					variant to have it marked as a true positive.
 		"""
-		self.debug = False
+		self.debug = True
 		if self.debug:
-			log_message = "Truthset()"
-			print(log_message)
-			print("\tsamples = list({})".format(type(samples[0])))
+
 			print("\ttruthset_type = {}".format(truthset_type))
-			print("\tKeyword Arguments:")
-			for k, v in kwargs.items():
-				print("\t{} =\t{}".format(k, v))
 
 		# Parameters to use when generating the truthsets.
 		self.truthset_type = truthset_type
@@ -353,6 +348,7 @@ class Truthset:
 		outputs = list()
 	
 		# Generate a separate truthset for each sample, then merge.
+		if not isinstance(samples, list): samples = [samples]
 		for sample in samples:
 			sample_truthset = self._generateSampleTruthset(sample, **kwargs)
 			outputs.append(sample_truthset)
@@ -363,7 +359,7 @@ class Truthset:
 			sample_truthset = self._combineTruthsets(outputs)
 
 		self.indel_filename = sample_truthset['filename-indel']
-		self.snp_filename   = sample_truthset['filename-snv']
+		self.snp_filename   = sample_truthset['filename-snp']
 
 	def _generateSampleTruthset(self, sample, **kwargs):
 		""" Generates individual truthsets per sample.
@@ -449,7 +445,7 @@ class Truthset:
 		result = {
 			'patientId':      sample['PatientID'],
 			'filename-indel': final_indel_truthset_filename,
-			'filename-snv':   final_snp_truthset_filename
+			'filename-snp':   final_snp_truthset_filename
 		}
 		return result
 
@@ -530,6 +526,10 @@ class Truthset:
 				options
 				training_type: {'RNA-seq', 'VAF', 'Intersection'}
 		 """
+		if self.debug:
+			print("Generating Truthset...")
+			print("\tInput: ", input_vcf)
+			print("\tOutput:", output_vcf)
 		with open(input_vcf, 'r') as input_file:
 			reader = vcf.Reader(input_file)
 			with open(output_vcf, 'w') as output_file:
@@ -983,13 +983,22 @@ class Pipeline:
 			**kwargs)
 
 		#somaticseq  = SomaticSeqPipeline(training_samples, prediction_samples, options, truthset = truthset)
-
-		somaticseq = SomaticSeqPipeline(
-			kind = 'Intersection',
+		# Build the model using the truthset and training samples.
+		somaticseq_trained_model = SomaticSeqPipeline(
+			kind = 'trainer',
 			sample = training_sample, 
 			options = options,
-			truthset = truthset.export()
+			truthset = truthset.export()['snp']
 			)
+		snp_classifier_filename = somaticseq_trained_model.export()['classifier']
+		# Run the prediction model.
+		somaticseq_prediction_model = SomaticSeqPipeline(
+			kind = 'prediction',
+			sample = prediction_samples[0],
+			options = options,
+			truthset = None,
+			snp_classifier = snp_classifier_filename)
+
 		# list of dictionaries with the output filenames for a given sample.
 		#predictions = somaticseq.predictions
 
@@ -1041,13 +1050,14 @@ GATK_MERGE_CALLSET = GATKMergeSampleCallsets(options)
 if __name__ == "__main__" and True:
 	documents_folder = os.path.join(os.getenv('HOME'), 'Documents')
 
-	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.CHR1.tsv")
+	full_sample_list_filename = os.path.join(documents_folder, "DNA-Seq_sample_list.tsv")
 
 	full_sample_list = tabletools.readCSV(full_sample_list_filename)
 
 	training_type = 'Intersection'
-	training_sample_ids = ['TCGA-2H-A9GR-CHR1']
-	prediction_sample_ids = ['TCGA-L5-A43M-CHR1', 'TCGA-R6-A6Y2-CHR1']
+
+	training_sample_ids = ['TCGA-2H-A9GR']
+	prediction_sample_ids = ['TCGA-L5-A43M']#, 'TCGA-R6-A6Y2-CHR1']
 
 	training_samples    = [i for i in full_sample_list if i['PatientID'] in training_sample_ids]
 	prediction_samples  = [i for i in full_sample_list if i['PatientID'] in prediction_sample_ids]
