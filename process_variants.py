@@ -28,6 +28,8 @@ import pytools.tabletools as tabletools
 import varianttools.callertools as callertools
 import varianttools.vcftools as vcftools
 
+import pysam
+import scipy
 
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
@@ -603,7 +605,7 @@ class Truthset:
 		# Generate a command-line to parse the files.
 		# snp_cmd_string   = "--variant " + " --variant ".join([i['filename-snv']   for i in samples]) + '\\'
 		# indel_cmd_string = "--variant " + " --variant ".join([i['filename-indel'] for i in samples]) + '\\'
-		snp_cmd_string   = " ".join(["I={}".format(i['filename-snv'])   for i in samples])
+		snp_cmd_string   = " ".join(["I={}".format(i['filename-snp'])   for i in samples])
 		indel_cmd_string = " ".join(["I={}".format(i['filename-indel']) for i in samples])
 		
 		picard_base_command = """java -jar {program} SortVcf {variants} O={output}"""
