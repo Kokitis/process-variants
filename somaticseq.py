@@ -211,7 +211,7 @@ class SomaticSeqPipeline:
 		return output_filename
 	
 	def _convertToTable(self, sample, callset, merged_callset, output_folder):
-		print("Converting to a table...")
+		print("Converting to a TSV file...")
 		start_time = time.time()
 		output_filename = os.path.join(
 			output_folder,
@@ -219,6 +219,7 @@ class SomaticSeqPipeline:
 		)
 		print("Merged_callset: {}\t{}".format(os.path.exists(merged_callset), merged_callset))
 		command = """python3 {script} \
+			-scale phred \
 			-ref {reference} \
 			-nbam {normal} \
 			-tbam {tumor} \
@@ -262,6 +263,31 @@ class SomaticSeqPipeline:
 		print("Converted the table in ", duration.isoformat())
 		return output_filename
 
+	def _convertToVcf(self, input_filename):
+		print("Converting to a VCF file...")
+
+		output_filename = os.path.splitext(input_table)[0] + ".vcf"
+
+		command = """python3 {script} \
+			--tsv-in {infile} \
+			--vcf-out {outfile} \
+			--normal-sample-name {normalid} \
+			--tumor-sample-name {tumorid} \
+			--individual-mutation-tools {mutation-tools} \
+			--emit-all \
+			--phred-scale""".format(
+				script = self.tsv_to_vcf_script,
+				infile = input_filename,
+				outfile = output_filename,
+				normalid = sample['NormalID'],
+				tumorid = sample['SampleID']
+			)
+
+		if not os.path.exists(output_filename):
+			systemtools.Terminal(command)
+		return output_filename
+		
+
 	def buildTrainer(self, input_filename):
 		print("Building model...")
 		command = "{script} {infile}".format(
@@ -304,7 +330,7 @@ OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_con
 options = configparser.ConfigParser()
 options.read(OPTIONS_FILENAME)
 
-if __name__ == "__main__":
+if __name__ == "__main__" and False:
 	#sample_id = "TCGA-2H-A9GR"
 	sample_id = "TCGA-L5-A43M"
 
@@ -328,5 +354,16 @@ if __name__ == "__main__":
 	}
 	test_output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder"
 	SomaticSeqPipeline(sample, test_output_folder, options)
+elif True:
+	string = """python3 {script} \
+			--tsv-in {infile} \
+			--vcf-out {outfile} \
+			--normal-sample-name {normalid} \
+			--tumor-sample-name {tumorid} \
+			--individual-mutation-tools {mutation-tools} \
+			--emit-all \
+			--phred-scale"""
+	string = string.split('\\')
+	pprint(string)
 
 
