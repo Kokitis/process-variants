@@ -37,13 +37,13 @@ class SomaticSeqPipeline:
 		print("\tsample: ", sample['PatientID'])
 
 		self.kind = kind
-		self.somaticseq_folder = options['Programs']['SomaticSeq']
-		self.somaticseq_program = os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
-		self.modify_vjsd_script = os.path.join(self.somaticseq_folder, "modify_VJSD.py")
-		self.ada_trainer_script = os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
-		self.ada_prediction_script=os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_predictor.R")
-		self.tsv_to_vcf_script  = os.path.join(self.somaticseq_folder, "SSeq_tsv2vcf.py")
-		self.merged_vcf2tsv_script     = os.path.join(self.somaticseq_folder, "SSeq_merged.vcf2tsv.py")
+		self.somaticseq_folder 		= options['Programs']['SomaticSeq']
+		self.somaticseq_program 	= os.path.join(self.somaticseq_folder, "SomaticSeq.Wrapper.sh")
+		self.modify_vjsd_script 	= os.path.join(self.somaticseq_folder, "modify_VJSD.py")
+		self.ada_trainer_script 	= os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_builder.R")
+		self.ada_prediction_script	= os.path.join(self.somaticseq_folder, "r_scripts", "ada_model_predictor.R")
+		self.tsv_to_vcf_script  	= os.path.join(self.somaticseq_folder, "SSeq_tsv2vcf.py")
+		self.merged_vcf2tsv_script  = os.path.join(self.somaticseq_folder, "SSeq_merged.vcf2tsv.py")
 		self.gatk_program = options['Programs']['GATK']
 
 		self.targets    = sample['ExomeTargets']
@@ -103,7 +103,8 @@ class SomaticSeqPipeline:
 			self.classifier = self.buildTrainer(self.trained_snp_table)
 		elif self.kind == 'prediction':
 			self.classifier = None
-			self.final_table = self.runPredictor(self.trained_snp_table)
+			prediction_table = self.runPredictor(self.trained_snp_table)
+			prediction_vcf = self._convertToVcf(sample, prediction_table)
 
 		return self.trained_snp_table
 
@@ -148,7 +149,10 @@ class SomaticSeqPipeline:
 			)
 
 			if method:
-				command = "python3 {program} -method {method} -infile {infile} -outfile {outfile}".format(
+				command = """python3 {program} \
+					--call-method {method} \
+					--input-vcf {infile} \
+					--output-vcf {outfile}""".format(
 					program = self.modify_vjsd_script,
 					method = method,
 					infile = input_file,
@@ -163,22 +167,27 @@ class SomaticSeqPipeline:
 		return processed_callset
 
 	def _mergeVariantFiles(self, callset, output_folder, patientId):
+		"""
+			Note: The only records that are merged are those that are
+			unfiltered in at least one caller.
+		"""
 		print("Merging files...")
 		output_filename = os.path.join(
 			output_folder,
-			"{}.trainer.modified.merged.vcf".format(patientId)
+			"{}.{}.modified.merged.vcf".format(patientId, self.kind)
 		)
 
 		command = """java -jar {gatk} \
-			-T CombineVariants \
-			-R {reference} \
-			-genotypeMergeOptions UNSORTED \
-			-V {muse} \
-			-V {mutect2} \
-			-V {somaticsniper} \
-			-V {strelka} \
-			-V {varscan} \
-			-o {output}""".format(
+			--analysis_type CombineVariants \
+			--reference_sequence {reference} \
+			--genotypemergeoption UNSORTED \
+			--filteredrecordsmergetype KEEP_IF_ANY_UNFILTERED \
+			--variant {muse} \
+			--variant {mutect2} \
+			--variant {somaticsniper} \
+			--variant {strelka} \
+			--variant {varscan} \
+			--out {output}""".format(
 			gatk 		= self.gatk_program,
 			reference 	= self.reference,
 			muse 		= callset['muse-snp'],
@@ -197,7 +206,7 @@ class SomaticSeqPipeline:
 		print("Excluding non-exome targets...")
 		output_filename = os.path.join(
 			output_folder,
-			"{}.trainer.modified.merged.excluded.vcf".format(patientId)
+			"{}.{}.modified.merged.excluded.vcf".format(patientId, self.kind)
 		)
 
 		command = """intersectBed -header -a {infile} -b {targets} > {output}""".format(
@@ -215,23 +224,23 @@ class SomaticSeqPipeline:
 		start_time = time.time()
 		output_filename = os.path.join(
 			output_folder,
-			"{}.training.modified.merged.excluded.snp.tsv".format(sample['PatientID'])
+			"{}.{}.modified.merged.excluded.snp.tsv".format(sample['PatientID'], self.kind)
 		)
 		print("Merged_callset: {}\t{}".format(os.path.exists(merged_callset), merged_callset))
 		command = """python3 {script} \
-			-scale phred \
-			-ref {reference} \
-			-nbam {normal} \
-			-tbam {tumor} \
-			-dbsnp {dbSNP} \
-			-cosmic {cosmic} \
-			-myvcf {merged} \
-			-muse {muse} \
-			-mutect {mutect2} \
-			-sniper {somaticsniper} \
-			-strelka {strelka} \
-			-varscan {varscan} \
-			-outfile {output}""".format(
+			--p-scale phred \
+			--genome-reference {reference} \
+			--normal-bam-file {normal} \
+			--tumor-bam-file {tumor} \
+			--dbsnp-vcf {dbSNP} \
+			--cosmic-vcf {cosmic} \
+			--vcf-format {merged} \
+			--muse-vcf {muse} \
+			--mutect-vcf {mutect2} \
+			--somaticsniper-vcf {somaticsniper} \
+			--strelka-strelka-vcf {strelka} \
+			--varscan-vcf {varscan} \
+			--output-tsv-file {output}""".format(
 				script 			= self.merged_vcf2tsv_script,
 				reference 		= self.reference,
 				normal 			= sample['NormalBAM'],
@@ -249,7 +258,7 @@ class SomaticSeqPipeline:
 			)
 
 		if self.kind == 'trainer':
-			command += " -truth " + self.truthset
+			command += " --ground-truth-vcf " + self.truthset
 
 		#if not os.path.exists(output_filename):
 		if not os.path.exists(output_filename):
@@ -263,28 +272,29 @@ class SomaticSeqPipeline:
 		print("Converted the table in ", duration.isoformat())
 		return output_filename
 
-	def _convertToVcf(self, input_filename):
+	def _convertToVcf(self, sample, input_filename):
 		print("Converting to a VCF file...")
 
-		output_filename = os.path.splitext(input_table)[0] + ".vcf"
+		output_filename = os.path.splitext(input_filename)[0] + ".vcf"
 
 		command = """python3 {script} \
 			--tsv-in {infile} \
 			--vcf-out {outfile} \
 			--normal-sample-name {normalid} \
 			--tumor-sample-name {tumorid} \
-			--individual-mutation-tools {mutation-tools} \
 			--emit-all \
+			--individual-mutation-tools {tools} \
 			--phred-scale""".format(
 				script = self.tsv_to_vcf_script,
 				infile = input_filename,
 				outfile = output_filename,
 				normalid = sample['NormalID'],
-				tumorid = sample['SampleID']
+				tumorid = sample['SampleID'],
+				tools = "MuSE CGA SomaticSniper Strelka VarScan2"
 			)
-
+		print(command)
 		if not os.path.exists(output_filename):
-			systemtools.Terminal(command)
+			systemtools.Terminal(command, use_system = True)
 		return output_filename
 		
 
@@ -321,6 +331,7 @@ class SomaticSeqPipeline:
 		)
 		print(command)
 		systemtools.Terminal(command, use_system = True)
+
 		return output_filename
 
 
@@ -330,7 +341,7 @@ OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_con
 options = configparser.ConfigParser()
 options.read(OPTIONS_FILENAME)
 
-if __name__ == "__main__" and False:
+if __name__ == "__main__":
 	#sample_id = "TCGA-2H-A9GR"
 	sample_id = "TCGA-L5-A43M"
 
@@ -342,28 +353,8 @@ if __name__ == "__main__" and False:
 
 	sample = full_sample_list('PatientID', sample_id)
 
-	_callset_folder = "/home/upmc/Documents/Genomic_Analysis/1_callsets/TCGA-2H-A9GR/original_callset/"
-
-
-	callset = {
-		'muse': 		_callset_folder + 'TCGA-L5-A43M-11A_vs_TCGA-L5-A43M-01A.Muse.chr1.vcf',
-		'mutect2': 		_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.mutect2.chr1.vcf',
-		'somaticsniper':_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.somaticsniper.chr1.vcf',
-		'strelka-snp': 	_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.passed.somatic.snvs.vcf.strelka.chr1.vcf',
-		'varscan-snp':	_callset_folder + 'TCGA-2H-A9GR-11A_vs_TCGA-2H-A9GR-01A.raw.snp.Somatic.hc.chr1.vcf'
-	}
 	test_output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder"
 	SomaticSeqPipeline(sample, test_output_folder, options)
-elif True:
-	string = """python3 {script} \
-			--tsv-in {infile} \
-			--vcf-out {outfile} \
-			--normal-sample-name {normalid} \
-			--tumor-sample-name {tumorid} \
-			--individual-mutation-tools {mutation-tools} \
-			--emit-all \
-			--phred-scale"""
-	string = string.split('\\')
-	pprint(string)
+
 
 
