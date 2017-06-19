@@ -26,12 +26,13 @@ def getBasename(filename):
 	return bn
 
 class SomaticSeqPipeline:
-	def __init__(self, kind, sample, options, truthset = None, snp_classifier = None):
+	def __init__(self, kind, sample, options, truthset = None, snp_classifier = None, options = None):
 		"""
 			Parameters
 			----------
 				kind: {'trainer', 'prediction'}
 		"""
+		if options is None: options = default_options
 		print("Runing Somaticseq...")
 		print("\tMode: ", kind)
 		print("\tsample: ", sample['PatientID'])
@@ -105,6 +106,8 @@ class SomaticSeqPipeline:
 			self.classifier = None
 			prediction_table = self.runPredictor(self.trained_snp_table)
 			prediction_vcf = self._convertToVcf(sample, prediction_table)
+		elif kind == 'table':
+			pass
 
 		return self.trained_snp_table
 
@@ -338,8 +341,8 @@ class SomaticSeqPipeline:
 
 PIPELINE_FOLDER = "/home/upmc/Documents/Genomic_Analysis"
 OPTIONS_FILENAME = os.path.join(PIPELINE_FOLDER, "0_config_files", "pipeline_configuration.txt")
-options = configparser.ConfigParser()
-options.read(OPTIONS_FILENAME)
+default_options = configparser.ConfigParser()
+default_options.read(OPTIONS_FILENAME)
 
 if __name__ == "__main__":
 	#sample_id = "TCGA-2H-A9GR"
@@ -354,7 +357,7 @@ if __name__ == "__main__":
 	sample = full_sample_list('PatientID', sample_id)
 
 	test_output_folder = "/home/upmc/Documents/Genomic_Analysis/debug_folder"
-	SomaticSeqPipeline(sample, test_output_folder, options)
+	SomaticSeqPipeline(sample, test_output_folder, default_options)
 
 
 
