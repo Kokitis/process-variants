@@ -30,7 +30,13 @@ class SomaticSeqPipeline:
 		"""
 			Parameters
 			----------
-				kind: {'trainer', 'prediction'}
+				kind: {'trainer', 'prediction', 'table'}
+					* 'trainer': Trains the classifier.
+						Requires 'truthset'
+					* 'prediction': Calculated the probability that a variant is a true variant.
+						Requires 'snp_classifier', the output from the 'trainer' step.
+					* 'table': generates the table used for the training and prediction steps.
+
 		"""
 		if options is None: options = default_options
 		print("Runing Somaticseq...")
@@ -52,26 +58,19 @@ class SomaticSeqPipeline:
 		self.dbSNP      = options['Reference Files']['dbSNP']
 		self.reference  = options['Reference Files']['reference genome']
 
-		self.snp_classifier = snp_classifier
+		self.snp_classifier = snp_classifier # Should only be provided in training mode.
 
-		if truthset is not None:
-			self.truthset = truthset
-		else:
-			self.truthset = os.path.join(
-				PIPELINE_FOLDER, 
-				"truthset", 
-				"files", 
-				"TCGA-2H-A9GR-CHR1", 
-				"TCGA-2H-A9GR-CHR1.Intersection.snp.final.truthset.vcf"
-			)
+		self.truthset = truthset # Should be None if in prediction/table mode
 
 		self.runWorkflow(sample)
+	
 	def export(self):
 		result = {
 			'classifier': self.classifier,
 			'table': self.trained_snp_table
 		}
 		return result
+	
 	def runWorkflow(self, sample):
 		print("Running Workflow...")
 		patientId = sample['PatientID']
@@ -82,23 +81,27 @@ class SomaticSeqPipeline:
 		processed_callset = self._processVJSDFiles(
 			callset, 
 			process_output_folder, 
-			patientId)
+			patientId
+		)
 		
 		merged_raw_variant_file = self._mergeVariantFiles(
 			processed_callset, 
 			process_output_folder, 
-			patientId)
+			patientId
+		)
 		
 		reduced_raw_variant_file= self._reduceVariantTargets(
 			merged_raw_variant_file, 
 			process_output_folder, 
-			patientId)
+			patientId
+		)
 		
 		self.trained_snp_table = self._convertToTable(
 			sample, 
 			callset, 
 			reduced_raw_variant_file, 
-			process_output_folder)
+			process_output_folder
+		)
 
 		if self.kind == 'trainer':
 			self.classifier = self.buildTrainer(self.trained_snp_table)
@@ -124,7 +127,7 @@ class SomaticSeqPipeline:
 		
 		callset = classifier(split_callset_folder, type = 'snp')	
 
-		return callset	
+		return callset
 
 	def _processVJSDFiles(self, callset, output_folder, patientId):
 		"""
